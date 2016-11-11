@@ -4,29 +4,74 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import 'vs/languages/javascript/common/javascript.contribution';
 import * as assert from 'assert';
 import URI from 'vs/base/common/uri';
-import {Range} from 'vs/editor/common/core/range';
-import {IMode} from 'vs/editor/common/modes';
-import {TokenSelectionSupport} from 'vs/editor/contrib/smartSelect/common/tokenSelectionSupport';
-import {load} from 'vs/editor/test/common/modesUtil';
-import {createMockModelService} from 'vs/editor/test/common/servicesTestUtils';
+import { Range } from 'vs/editor/common/core/range';
+import { IMode } from 'vs/editor/common/modes';
+import { IndentAction } from 'vs/editor/common/modes/languageConfiguration';
+import { TokenSelectionSupport } from 'vs/editor/contrib/smartSelect/common/tokenSelectionSupport';
+import { MockTokenizingMode } from 'vs/editor/test/common/mocks/mockMode';
+import { LanguageConfigurationRegistry } from 'vs/editor/common/modes/languageConfigurationRegistry';
+import { ModelServiceImpl } from 'vs/editor/common/services/modelServiceImpl';
+import { TestConfigurationService } from 'vs/platform/configuration/test/common/testConfigurationService';
+
+class MockJSMode extends MockTokenizingMode {
+
+	constructor() {
+		super('mock-js');
+
+		LanguageConfigurationRegistry.register(this.getId(), {
+			brackets: [
+				['(', ')'],
+				['{', '}'],
+				['[', ']']
+			],
+
+			onEnterRules: [
+				{
+					// e.g. /** | */
+					beforeText: /^\s*\/\*\*(?!\/)([^\*]|\*(?!\/))*$/,
+					afterText: /^\s*\*\/$/,
+					action: { indentAction: IndentAction.IndentOutdent, appendText: ' * ' }
+				},
+				{
+					// e.g. /** ...|
+					beforeText: /^\s*\/\*\*(?!\/)([^\*]|\*(?!\/))*$/,
+					action: { indentAction: IndentAction.None, appendText: ' * ' }
+				},
+				{
+					// e.g.  * ...|
+					beforeText: /^(\t|(\ \ ))*\ \*(\ ([^\*]|\*(?!\/))*)?$/,
+					action: { indentAction: IndentAction.None, appendText: '* ' }
+				},
+				{
+					// e.g.  */|
+					beforeText: /^(\t|(\ \ ))*\ \*\/\s*$/,
+					action: { indentAction: IndentAction.None, removeText: 1 }
+				},
+				{
+					// e.g.  *-----*/|
+					beforeText: /^(\t|(\ \ ))*\ \*[^/]*\*\/\s*$/,
+					action: { indentAction: IndentAction.None, removeText: 1 }
+				}
+			]
+		});
+	}
+}
 
 suite('TokenSelectionSupport', () => {
 
-	let modelService = createMockModelService();
-	let tokenSelectionSupport = new TokenSelectionSupport(modelService);
-	let _mode: IMode;
+	let modelService: ModelServiceImpl;
+	let tokenSelectionSupport: TokenSelectionSupport;
+	let _mode: IMode = new MockJSMode();
 
-	suiteSetup((done) => {
-		load('javascript').then(mode => {
-			_mode = mode;
-			done();
-		});
+	setup(() => {
+
+		modelService = new ModelServiceImpl(null, new TestConfigurationService(), null);
+		tokenSelectionSupport = new TokenSelectionSupport(modelService);
 	});
 
-	function assertGetRangesToPosition(text:string[], lineNumber:number, column:number, ranges:Range[]): void {
+	function assertGetRangesToPosition(text: string[], lineNumber: number, column: number, ranges: Range[]): void {
 		let uri = URI.file('test.js');
 		modelService.createModel(text.join('\n'), _mode, uri);
 
@@ -52,17 +97,17 @@ suite('TokenSelectionSupport', () => {
 			'\t}',
 			'}'
 		], 3, 20, [
-			new Range(1, 1, 5, 2),
-			new Range(1, 21, 5, 2),
-			new Range(2, 1, 4, 3),
-			new Range(2, 11, 4, 3),
-			new Range(3, 1, 4, 2),
-			new Range(3, 1, 3, 27),
-			new Range(3, 10, 3, 27),
-			new Range(3, 11, 3, 26),
-			new Range(3, 17, 3, 26),
-			new Range(3, 18, 3, 25),
-			new Range(3, 19, 3, 20)
-		]);
+				new Range(1, 1, 5, 2),
+				new Range(1, 21, 5, 2),
+				new Range(2, 1, 4, 3),
+				new Range(2, 11, 4, 3),
+				new Range(3, 1, 4, 2),
+				new Range(3, 1, 3, 27),
+				new Range(3, 10, 3, 27),
+				new Range(3, 11, 3, 26),
+				new Range(3, 17, 3, 26),
+				new Range(3, 18, 3, 25),
+				// new Range(3, 19, 3, 20)
+			]);
 	});
 });

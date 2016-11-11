@@ -11,6 +11,9 @@ import * as vscode from 'vscode';
 
 import { ThrottledDelayer } from './utils/async';
 
+import * as nls from 'vscode-nls';
+let localize = nls.loadMessageBundle();
+
 export class LineDecoder {
 	private stringDecoder: NodeStringDecoder;
 	private remaining: string;
@@ -67,7 +70,7 @@ namespace RunTrigger {
 		onSave: 'onSave',
 		onType: 'onType'
 	};
-	export let from = function(value: string): RunTrigger {
+	export let from = function (value: string): RunTrigger {
 		if (value === 'onType') {
 			return RunTrigger.onType;
 		} else {
@@ -105,7 +108,7 @@ export default class PHPValidationProvider {
 		this.loadConfiguration();
 
 		vscode.workspace.onDidOpenTextDocument(this.triggerValidate, this, subscriptions);
-		vscode.workspace.onDidCloseTextDocument((textDocument)=> {
+		vscode.workspace.onDidCloseTextDocument((textDocument) => {
 			this.diagnosticCollection.delete(textDocument.uri);
 			delete this.delayers[textDocument.uri.toString()];
 		}, null, subscriptions);
@@ -155,7 +158,7 @@ export default class PHPValidationProvider {
 			delayer = new ThrottledDelayer<void>(this.trigger === RunTrigger.onType ? 250 : 0);
 			this.delayers[key] = delayer;
 		}
-		delayer.trigger(() => this.doValidate(textDocument) );
+		delayer.trigger(() => this.doValidate(textDocument));
 	}
 
 	private doValidate(textDocument: vscode.TextDocument): Promise<void> {
@@ -223,9 +226,9 @@ export default class PHPValidationProvider {
 	private showError(error: any, executable: string): void {
 		let message: string = null;
 		if (error.code === 'ENOENT') {
-			message = `Cannot validate the php file. The php program was not found. Use the 'php.validate.executablePath' setting to configure the location of 'php'`;
+			message = localize('noPHP', 'Cannot validate the php file. The php program was not found. Use the \'php.validate.executablePath\' setting to configure the location of \'php\'');
 		} else {
-			message = error.message ? error.message : `Failed to run php using path: ${executable}. Reason is unknown.`;
+			message = error.message ? error.message : localize('unknownReason', 'Failed to run php using path: {0}. Reason is unknown.', executable);
 		}
 		vscode.window.showInformationMessage(message);
 	}

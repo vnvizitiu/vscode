@@ -8,7 +8,7 @@ import * as assert from 'assert';
 import strings = require('vs/base/common/strings');
 
 suite('Strings', () => {
-	test('equalsIgnoreCase', function() {
+	test('equalsIgnoreCase', function () {
 
 		assert(strings.equalsIgnoreCase('', ''));
 		assert(!strings.equalsIgnoreCase('', '1'));
@@ -33,13 +33,13 @@ suite('Strings', () => {
 	});
 
 	test('computeLineStarts', function () {
-		function assertLineStart(text: string, ...offsets: number[]):void {
+		function assertLineStart(text: string, ...offsets: number[]): void {
 			var actual = strings.computeLineStarts(text);
 			assert.equal(actual.length, offsets.length);
-			if(actual.length !== offsets.length) {
+			if (actual.length !== offsets.length) {
 				return;
 			}
-			while(offsets.length > 0) {
+			while (offsets.length > 0) {
 				assert.equal(actual.pop(), offsets.pop());
 			}
 		}
@@ -135,12 +135,62 @@ suite('Strings', () => {
 		assert.strictEqual(' 	  '.trim(), '');
 	});
 
-	test('localeCompare', function() {
-		assert.strictEqual(strings.localeCompare('a', 'a'), 'a'.localeCompare('a'));
-		assert.strictEqual(strings.localeCompare('A', 'A'), 'A'.localeCompare('A'));
-		assert.strictEqual(strings.localeCompare('All', 'A'), 'All'.localeCompare('A'));
-		assert.strictEqual(strings.localeCompare('A', 'All'), 'A'.localeCompare('All'));
-		assert.strictEqual(strings.localeCompare('A', 'a'), 'A'.localeCompare('a'));
-		assert.strictEqual(strings.localeCompare('a', 'A'), 'a'.localeCompare('A'));
+	test('appendWithLimit', function () {
+		assert.strictEqual(strings.appendWithLimit('ab', 'cd', 100), 'abcd');
+		assert.strictEqual(strings.appendWithLimit('ab', 'cd', 2), '...cd');
+		assert.strictEqual(strings.appendWithLimit('ab', 'cdefgh', 4), '...efgh');
+		assert.strictEqual(strings.appendWithLimit('abcdef', 'ghijk', 7), '...efghijk');
 	});
+
+	test('repeat', () => {
+		assert.strictEqual(strings.repeat(' ', 4), '    ');
+		assert.strictEqual(strings.repeat(' ', 1), ' ');
+		assert.strictEqual(strings.repeat(' ', 0), '');
+		assert.strictEqual(strings.repeat('abc', 2), 'abcabc');
+	});
+
+	test('lastNonWhitespaceIndex', () => {
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc  \t \t '), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc'), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc\t'), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc '), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc  \t \t '), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc  \t \t abc \t \t '), 11);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('abc  \t \t abc \t \t ', 8), 2);
+		assert.strictEqual(strings.lastNonWhitespaceIndex('  \t \t '), -1);
+	});
+
+	test('containsRTL', () => {
+		assert.equal(strings.containsRTL('a'), false);
+		assert.equal(strings.containsRTL(''), false);
+		assert.equal(strings.containsRTL(strings.UTF8_BOM_CHARACTER + 'a'), false);
+		assert.equal(strings.containsRTL('hello world!'), false);
+		assert.equal(strings.containsRTL('a📚📚b'), false);
+		assert.equal(strings.containsRTL('هناك حقيقة مثبتة منذ زمن طويل'), true);
+		assert.equal(strings.containsRTL('זוהי עובדה מבוססת שדעתו'), true);
+	});
+
+	// test('containsRTL speed', () => {
+	// 	var SIZE = 1000000;
+	// 	var REPEAT = 10;
+	// 	function generateASCIIStr(len:number): string {
+	// 		let r = '';
+	// 		for (var i = 0; i < len; i++) {
+	// 			var res = Math.floor(Math.random() * 256);
+	// 			r += String.fromCharCode(res);
+	// 		}
+	// 		return r;
+	// 	}
+	// 	function testContainsRTLSpeed(): number {
+	// 		var str = generateASCIIStr(SIZE);
+	// 		var start = Date.now();
+	// 		assert.equal(strings.containsRTL(str), false);
+	// 		return (Date.now() - start);
+	// 	}
+	// 	var allTime = 0;
+	// 	for (var i = 0; i < REPEAT; i++) {
+	// 		allTime += testContainsRTLSpeed();
+	// 	}
+	// 	console.log('TOOK: ' + (allTime)/10 + 'ms for size of ' + SIZE/1000000 + 'Mb');
+	// });
 });

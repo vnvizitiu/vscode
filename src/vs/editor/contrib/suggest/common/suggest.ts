@@ -4,96 +4,225 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {sequence} from 'vs/base/common/async';
-import {illegalArgument, onUnexpectedError} from 'vs/base/common/errors';
-import {TPromise} from 'vs/base/common/winjs.base';
-import {IModel, IPosition} from 'vs/editor/common/editorCommon';
-import {CommonEditorRegistry} from 'vs/editor/common/editorCommonExtensions';
-import {ISuggestResult, ISuggestSupport} from 'vs/editor/common/modes';
-import LanguageFeatureRegistry from 'vs/editor/common/modes/languageFeatureRegistry';
-import {SnippetsRegistry} from 'vs/editor/common/modes/supports';
+import { sequence, asWinJsPromise } from 'vs/base/common/async';
+import { isFalsyOrEmpty } from 'vs/base/common/arrays';
+import { compare } from 'vs/base/common/strings';
+import { assign } from 'vs/base/common/objects';
+import { onUnexpectedError } from 'vs/base/common/errors';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { IReadOnlyModel, IPosition } from 'vs/editor/common/editorCommon';
+import { CommonEditorRegistry } from 'vs/editor/common/editorCommonExtensions';
+import { ISuggestResult, ISuggestSupport, ISuggestion, SuggestRegistry } from 'vs/editor/common/modes';
+import { ISnippetsRegistry, Extensions } from 'vs/editor/common/modes/snippetsRegistry';
+import { Position } from 'vs/editor/common/core/position';
+import { Registry } from 'vs/platform/platform';
+import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
+import { DefaultConfig } from 'vs/editor/common/config/defaultConfig';
 
-export var CONTEXT_SUGGEST_WIDGET_VISIBLE = 'suggestWidgetVisible';
-export var CONTEXT_SUGGESTION_SUPPORTS_ACCEPT_ON_KEY = 'suggestionSupportsAcceptOnKey';
-export var ACCEPT_SELECTED_SUGGESTION_CMD = 'acceptSelectedSuggestion';
+export const Context = {
+	Visible: new RawContextKey<boolean>('suggestWidgetVisible', false),
+	MultipleSuggestions: new RawContextKey<boolean>('suggestWidgetMultipleSuggestions', false),
+	AcceptOnKey: new RawContextKey<boolean>('suggestionSupportsAcceptOnKey', true),
+	AcceptSuggestionsOnEnter: new RawContextKey<boolean>('acceptSuggestionOnEnter', DefaultConfig.editor.acceptSuggestionOnEnter)
+};
 
-export var SuggestRegistry = new LanguageFeatureRegistry<ISuggestSupport>('suggestSupport');
-
-export interface ISuggestResult2 extends ISuggestResult {
-	support?: ISuggestSupport;
+export interface ISuggestionItem {
+	position: IPosition;
+	suggestion: ISuggestion;
+	container: ISuggestResult;
+	support: ISuggestSupport;
+	resolve(): TPromise<void>;
 }
 
-export function suggest(model: IModel, position: IPosition, triggerCharacter: string, groups?: ISuggestSupport[][]): TPromise<ISuggestResult2[][]> {
+export type SnippetConfig = 'top' | 'bottom' | 'inline' | 'none';
 
-	if (!groups) {
-		groups = SuggestRegistry.orderedGroups(model);
+
+// add suggestions from snippet registry.
+export const snippetSuggestSupport: ISuggestSupport = {
+
+	triggerCharacters: [],
+
+	provideCompletionItems(model: IReadOnlyModel, position: Position): ISuggestResult {
+		const suggestions = Registry.as<ISnippetsRegistry>(Extensions.Snippets).getSnippetCompletions(model, position);
+		if (suggestions) {
+			return { suggestions };
+		}
+	}
+};
+
+export function provideSuggestionItems(model: IReadOnlyModel, position: Position, snippetConfig: SnippetConfig = 'bottom', onlyFrom?: ISuggestSupport[]): TPromise<ISuggestionItem[]> {
+
+	const allSuggestions: ISuggestionItem[] = [];
+	const acceptSuggestion = createSuggesionFilter(snippetConfig);
+
+	position = position.clone();
+
+	// get provider groups, always add snippet suggestion provider
+	const supports = SuggestRegistry.orderedGroups(model);
+
+	// add snippets provider unless turned off
+	if (snippetConfig !== 'none') {
+		supports.unshift([snippetSuggestSupport]);
 	}
 
-	const resource = model.getAssociatedResource();
-	const suggestions: ISuggestResult[][] = [];
-
-	const factory = groups.map((supports, index) => {
+	// add suggestions from contributed providers - providers are ordered in groups of
+	// equal score and once a group produces a result the process stops
+	let hasResult = false;
+	const factory = supports.map(supports => {
 		return () => {
-
-			// stop as soon as a group produced a result
-			if (suggestions.length > 0) {
+			// stop when we have a result
+			if (hasResult) {
 				return;
 			}
-
 			// for each support in the group ask for suggestions
-			const promises = supports.map(support => {
-				return support.suggest(resource, position, triggerCharacter).then(values => {
+			return TPromise.join(supports.map(support => {
 
-					const result: ISuggestResult2[] = [];
-					for (let suggestResult of values) {
+				if (!isFalsyOrEmpty(onlyFrom) && onlyFrom.indexOf(support) < 0) {
+					return;
+				}
 
-						if (!suggestResult
-							|| !Array.isArray(suggestResult.suggestions)
-							|| suggestResult.suggestions.length === 0) {
-							continue;
+				return asWinJsPromise(token => support.provideCompletionItems(model, position, token)).then(container => {
+
+					const len = allSuggestions.length;
+
+					if (container && !isFalsyOrEmpty(container.suggestions)) {
+						for (let suggestion of container.suggestions) {
+							if (acceptSuggestion(suggestion)) {
+
+								fixOverwriteBeforeAfter(suggestion, container);
+
+								allSuggestions.push({
+									position,
+									container,
+									suggestion,
+									support,
+									resolve: createSuggestionResolver(support, suggestion, model, position)
+								});
+							}
 						}
-
-						result.push({
-							support,
-							currentWord: suggestResult.currentWord,
-							incomplete: suggestResult.incomplete,
-							suggestions: suggestResult.suggestions
-						});
 					}
 
-					return result;
+					if (len !== allSuggestions.length && support !== snippetSuggestSupport) {
+						hasResult = true;
+					}
 
 				}, onUnexpectedError);
-			});
-
-			return TPromise.join(promises).then(values => {
-				for (let value of values) {
-					if (Array.isArray(value) && value.length > 0) {
-						suggestions.push(value);
-					}
-				}
-			});
+			}));
 		};
 	});
 
-	return sequence(factory).then(() => {
-		// add snippets to the first group
-		const snippets = SnippetsRegistry.getSnippets(model, position);
-		if (suggestions.length === 0) {
-			suggestions.push([snippets]);
-		} else {
-			suggestions[0].push(snippets);
+	const result = sequence(factory).then(() => allSuggestions.sort(getSuggestionComparator(snippetConfig)));
+
+	// result.then(items => {
+	// 	console.log(model.getWordUntilPosition(position), items.map(item => `${item.suggestion.label}, type=${item.suggestion.type}, incomplete?${item.container.incomplete}, overwriteBefore=${item.suggestion.overwriteBefore}`));
+	// 	return items;
+	// }, err => {
+	// 	console.warn(model.getWordUntilPosition(position), err);
+	// });
+
+	return result;
+}
+
+function fixOverwriteBeforeAfter(suggestion: ISuggestion, container: ISuggestResult): void {
+	if (typeof suggestion.overwriteBefore !== 'number') {
+		suggestion.overwriteBefore = 0;
+	}
+	if (typeof suggestion.overwriteAfter !== 'number' || suggestion.overwriteAfter < 0) {
+		suggestion.overwriteAfter = 0;
+	}
+}
+
+function createSuggestionResolver(provider: ISuggestSupport, suggestion: ISuggestion, model: IReadOnlyModel, position: Position): () => TPromise<void> {
+	return () => {
+		if (typeof provider.resolveCompletionItem === 'function') {
+			return asWinJsPromise(token => provider.resolveCompletionItem(model, position, suggestion, token))
+				.then(value => { assign(suggestion, value); });
 		}
-		return suggestions;
-	});
+		return TPromise.as(void 0);
+	};
+}
+
+function createSuggesionFilter(snippetConfig: SnippetConfig): (candidate: ISuggestion) => boolean {
+	if (snippetConfig === 'none') {
+		return suggestion => suggestion.type !== 'snippet';
+	} else {
+		return () => true;
+	}
+}
+
+export function getSuggestionComparator(snippetConfig: SnippetConfig): (a: ISuggestionItem, b: ISuggestionItem) => number {
+
+	function defaultComparator(a: ISuggestionItem, b: ISuggestionItem): number {
+
+		let ret = 0;
+
+		// check with 'sortText'
+		if (typeof a.suggestion.sortText === 'string' && typeof b.suggestion.sortText === 'string') {
+			ret = compare(a.suggestion.sortText.toLowerCase(), b.suggestion.sortText.toLowerCase());
+		}
+
+		// check with 'label'
+		if (!ret) {
+			ret = compare(a.suggestion.label.toLowerCase(), b.suggestion.label.toLowerCase());
+		}
+
+		// check with 'type' and lower snippets
+		if (!ret && a.suggestion.type !== b.suggestion.type) {
+			if (a.suggestion.type === 'snippet') {
+				ret = 1;
+			} else if (b.suggestion.type === 'snippet') {
+				ret = -1;
+			}
+		}
+
+		return ret;
+	}
+
+	function snippetUpComparator(a: ISuggestionItem, b: ISuggestionItem): number {
+		if (a.suggestion.type !== b.suggestion.type) {
+			if (a.suggestion.type === 'snippet') {
+				return -1;
+			} else if (b.suggestion.type === 'snippet') {
+				return 1;
+			}
+		}
+		return defaultComparator(a, b);
+	}
+
+	function snippetDownComparator(a: ISuggestionItem, b: ISuggestionItem): number {
+		if (a.suggestion.type !== b.suggestion.type) {
+			if (a.suggestion.type === 'snippet') {
+				return 1;
+			} else if (b.suggestion.type === 'snippet') {
+				return -1;
+			}
+		}
+		return defaultComparator(a, b);
+	}
+
+	if (snippetConfig === 'top') {
+		return snippetUpComparator;
+	} else if (snippetConfig === 'bottom') {
+		return snippetDownComparator;
+	} else {
+		return defaultComparator;
+	}
 }
 
 CommonEditorRegistry.registerDefaultLanguageCommand('_executeCompletionItemProvider', (model, position, args) => {
 
-	let triggerCharacter = args['triggerCharacter'];
-	if (typeof triggerCharacter !== 'undefined' && typeof triggerCharacter !== 'string') {
-		throw illegalArgument('triggerCharacter');
-	}
+	const result: ISuggestResult = {
+		incomplete: false,
+		suggestions: []
+	};
 
-	return suggest(model, position, triggerCharacter);
+	return provideSuggestionItems(model, position).then(items => {
+
+		for (const {container, suggestion} of items) {
+			result.incomplete = result.incomplete || container.incomplete;
+			result.suggestions.push(suggestion);
+		}
+
+		return result;
+	});
 });

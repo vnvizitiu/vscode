@@ -5,18 +5,21 @@
 'use strict';
 
 import URI from 'vs/base/common/uri';
-import {TPromise} from 'vs/base/common/winjs.base';
-import {EventType, IModel, DefaultEndOfLine} from 'vs/editor/common/editorCommon';
-import {EditableTextModel} from 'vs/editor/common/model/editableTextModel';
-import {TextModel} from 'vs/editor/common/model/textModel';
-import {IMode} from 'vs/editor/common/modes';
+import {
+	EventType, IModel, ITextModelCreationOptions, IModelDecorationsChangedEvent,
+	IModelOptionsChangedEvent, IModelModeChangedEvent, IRawText
+} from 'vs/editor/common/editorCommon';
+import { EditableTextModel } from 'vs/editor/common/model/editableTextModel';
+import { TextModel } from 'vs/editor/common/model/textModel';
+import { IDisposable } from 'vs/base/common/lifecycle';
+import { BulkListenerCallback } from 'vs/base/common/eventEmitter';
 
 // The hierarchy is:
 // Model -> EditableTextModel -> TextModelWithDecorations -> TextModelWithTrackedRanges -> TextModelWithMarkers -> TextModelWithTokens -> TextModel
 
 var MODEL_ID = 0;
 
-var aliveModels:{[modelId:string]:boolean;} = {};
+var aliveModels: { [modelId: string]: boolean; } = {};
 
 // var LAST_CNT = 0;
 // setInterval(() => {
@@ -31,10 +34,32 @@ var aliveModels:{[modelId:string]:boolean;} = {};
 
 export class Model extends EditableTextModel implements IModel {
 
-	public id:string;
+	public onDidChangeDecorations(listener: (e: IModelDecorationsChangedEvent) => void): IDisposable {
+		return this.addListener2(EventType.ModelDecorationsChanged, listener);
+	}
+	public onDidChangeOptions(listener: (e: IModelOptionsChangedEvent) => void): IDisposable {
+		return this.addListener2(EventType.ModelOptionsChanged, listener);
+	}
+	public onWillDispose(listener: () => void): IDisposable {
+		return this.addListener2(EventType.ModelDispose, listener);
+	}
+	public onDidChangeMode(listener: (e: IModelModeChangedEvent) => void): IDisposable {
+		return this.addListener2(EventType.ModelModeChanged, listener);
+	}
 
-	private _associatedResource:URI;
-	private _attachedEditorCount:number;
+	public addBulkListener(listener: BulkListenerCallback): IDisposable {
+		return super.addBulkListener(listener);
+	}
+
+	public static createFromString(text: string, options: ITextModelCreationOptions = TextModel.DEFAULT_CREATION_OPTIONS, languageId: string = null, uri: URI = null): Model {
+		let rawText = TextModel.toRawText(text, options);
+		return new Model(rawText, languageId, uri);
+	}
+
+	public id: string;
+
+	private _associatedResource: URI;
+	private _attachedEditorCount: number;
 
 	/**
 	 * Instantiates a new model
@@ -49,10 +74,8 @@ export class Model extends EditableTextModel implements IModel {
 	 *   The resource associated with this model. If the value is not provided an
 	 *   unique in memory URL is constructed as the associated resource.
 	 */
-	constructor(rawText:string, defaultEOL:DefaultEndOfLine, modeOrPromise:IMode|TPromise<IMode>, associatedResource:URI=null) {
-		super([
-			EventType.ModelDispose
-		], TextModel.toRawText(rawText, defaultEOL), modeOrPromise);
+	constructor(rawText: IRawText, languageId: string, associatedResource: URI = null) {
+		super([EventType.ModelDispose], rawText, languageId);
 
 		// Generate a new unique model id
 		MODEL_ID++;
@@ -66,17 +89,13 @@ export class Model extends EditableTextModel implements IModel {
 
 
 		if (aliveModels[String(this._associatedResource)]) {
-			throw new Error('Cannot instantiate a second Model with the same URI!');
+			throw new Error('Cannot instantiate a second Model with the same URI: ' + String(this._associatedResource));
 		}
 
 		this._attachedEditorCount = 0;
 
 		aliveModels[String(this._associatedResource)] = true;
 		// console.log('ALIVE MODELS: ' + Object.keys(aliveModels).join('\n'));
-	}
-
-	public getModeId(): string {
-		return this.getMode().getId();
 	}
 
 	public destroy(): void {
@@ -93,10 +112,6 @@ export class Model extends EditableTextModel implements IModel {
 	}
 
 	public onBeforeAttached(): void {
-		if (this._isDisposed) {
-			throw new Error('Model.onBeforeAttached: Model is disposed');
-		}
-
 		this._attachedEditorCount++;
 
 		// Warm up tokens for the editor
@@ -104,24 +119,20 @@ export class Model extends EditableTextModel implements IModel {
 	}
 
 	public onBeforeDetached(): void {
-		if (this._isDisposed) {
-			throw new Error('Model.onBeforeDetached: Model is disposed');
-		}
-
 		this._attachedEditorCount--;
 
 		// Intentional empty (for now)
+	}
+
+	protected _shouldAutoTokenize(): boolean {
+		return this.isAttachedToEditor();
 	}
 
 	public isAttachedToEditor(): boolean {
 		return this._attachedEditorCount > 0;
 	}
 
-	public getAssociatedResource(): URI {
-		if (this._isDisposed) {
-			throw new Error('Model.getAssociatedResource: Model is disposed');
-		}
-
+	public get uri(): URI {
 		return this._associatedResource;
 	}
 }

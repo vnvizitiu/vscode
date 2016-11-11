@@ -5,6 +5,8 @@
 'use strict';
 
 import strings = require('vs/base/common/strings');
+import { BoundedLinkedMap } from 'vs/base/common/map';
+import { CharCode } from 'vs/base/common/charCode';
 
 export interface IFilter {
 	// Returns null if word doesn't match.
@@ -25,7 +27,7 @@ export interface IMatch {
  * filter.
  */
 export function or(...filter: IFilter[]): IFilter {
-	return function(word: string, wordToMatchAgainst: string): IMatch[] {
+	return function (word: string, wordToMatchAgainst: string): IMatch[] {
 		for (let i = 0, len = filter.length; i < len; i++) {
 			let match = filter[i](word, wordToMatchAgainst);
 			if (match) {
@@ -42,7 +44,7 @@ export function or(...filter: IFilter[]): IFilter {
  * returned if *all* filters match.
  */
 export function and(...filter: IFilter[]): IFilter {
-	return function(word: string, wordToMatchAgainst: string): IMatch[] {
+	return function (word: string, wordToMatchAgainst: string): IMatch[] {
 		let result: IMatch[] = [];
 		for (let i = 0, len = filter.length; i < len; i++) {
 			let match = filter[i](word, wordToMatchAgainst);
@@ -61,7 +63,7 @@ export let matchesStrictPrefix: IFilter = (word: string, wordToMatchAgainst: str
 export let matchesPrefix: IFilter = (word: string, wordToMatchAgainst: string): IMatch[] => { return _matchesPrefix(true, word, wordToMatchAgainst); };
 
 function _matchesPrefix(ignoreCase: boolean, word: string, wordToMatchAgainst: string): IMatch[] {
-	if (wordToMatchAgainst.length === 0 || wordToMatchAgainst.length < word.length) {
+	if (!wordToMatchAgainst || wordToMatchAgainst.length === 0 || wordToMatchAgainst.length < word.length) {
 		return null;
 	}
 	if (ignoreCase) {
@@ -80,7 +82,6 @@ function _matchesPrefix(ignoreCase: boolean, word: string, wordToMatchAgainst: s
 
 export function matchesContiguousSubString(word: string, wordToMatchAgainst: string): IMatch[] {
 	let index = wordToMatchAgainst.toLowerCase().indexOf(word.toLowerCase());
-
 	if (index === -1) {
 		return null;
 	}
@@ -114,19 +115,24 @@ function _matchesSubString(word: string, wordToMatchAgainst: string, i: number, 
 // CamelCase
 
 function isLower(code: number): boolean {
-	return 97 <= code && code <= 122;
+	return CharCode.a <= code && code <= CharCode.z;
 }
 
 function isUpper(code: number): boolean {
-	return 65 <= code && code <= 90;
+	return CharCode.A <= code && code <= CharCode.Z;
 }
 
 function isNumber(code: number): boolean {
-	return 48 <= code && code <= 57;
+	return CharCode.Digit0 <= code && code <= CharCode.Digit9;
 }
 
 function isWhitespace(code: number): boolean {
-	return [32, 9, 10, 13].indexOf(code) > -1;
+	return (
+		code === CharCode.Space
+		|| code === CharCode.Tab
+		|| code === CharCode.LineFeed
+		|| code === CharCode.CarriageReturn
+	);
 }
 
 function isAlphanumeric(code: number): boolean {
@@ -173,13 +179,16 @@ function _matchesCamelCase(word: string, camelCaseWord: string, i: number, j: nu
 	}
 }
 
+interface ICamelCaseAnalysis {
+	upperPercent: number;
+	lowerPercent: number;
+	alphaPercent: number;
+	numericPercent: number;
+}
+
 // Heuristic to avoid computing camel case matcher for words that don't
 // look like camelCaseWords.
-function isCamelCaseWord(word: string): boolean {
-	if (word.length > 60) {
-		return false;
-	}
-
+function analyzeCamelCaseWord(word: string): ICamelCaseAnalysis {
 	let upper = 0, lower = 0, alpha = 0, numeric = 0, code = 0;
 
 	for (let i = 0; i < word.length; i++) {
@@ -196,6 +205,16 @@ function isCamelCaseWord(word: string): boolean {
 	let alphaPercent = alpha / word.length;
 	let numericPercent = numeric / word.length;
 
+	return { upperPercent, lowerPercent, alphaPercent, numericPercent };
+}
+
+function isUpperCaseWord(analysis: ICamelCaseAnalysis): boolean {
+	const { upperPercent, lowerPercent, alphaPercent, numericPercent } = analysis;
+	return lowerPercent === 0 && upperPercent > 0.6;
+}
+
+function isCamelCaseWord(analysis: ICamelCaseAnalysis): boolean {
+	const { upperPercent, lowerPercent, alphaPercent, numericPercent } = analysis;
 	return lowerPercent > 0.2 && upperPercent < 0.8 && alphaPercent > 0.6 && numericPercent < 0.2;
 }
 
@@ -220,7 +239,7 @@ function isCamelCasePattern(word: string): boolean {
 }
 
 export function matchesCamelCase(word: string, camelCaseWord: string): IMatch[] {
-	if (camelCaseWord.length === 0) {
+	if (!camelCaseWord || camelCaseWord.length === 0) {
 		return null;
 	}
 
@@ -228,8 +247,18 @@ export function matchesCamelCase(word: string, camelCaseWord: string): IMatch[] 
 		return null;
 	}
 
-	if (!isCamelCaseWord(camelCaseWord)) {
+	if (camelCaseWord.length > 60) {
 		return null;
+	}
+
+	const analysis = analyzeCamelCaseWord(camelCaseWord);
+
+	if (!isCamelCaseWord(analysis)) {
+		if (!isUpperCaseWord(analysis)) {
+			return null;
+		}
+
+		camelCaseWord = camelCaseWord.toLowerCase();
 	}
 
 	let result: IMatch[] = null;
@@ -242,6 +271,54 @@ export function matchesCamelCase(word: string, camelCaseWord: string): IMatch[] 
 	return result;
 }
 
+// Matches beginning of words supporting non-ASCII languages
+// E.g. "gp" or "g p" will match "Git: Pull"
+// Useful in cases where the target is words (e.g. command labels)
+
+export function matchesWords(word: string, target: string): IMatch[] {
+	if (!target || target.length === 0) {
+		return null;
+	}
+
+	let result: IMatch[] = null;
+	let i = 0;
+
+	while (i < target.length && (result = _matchesWords(word.toLowerCase(), target, 0, i)) === null) {
+		i = nextWord(target, i + 1);
+	}
+
+	return result;
+}
+
+function _matchesWords(word: string, target: string, i: number, j: number): IMatch[] {
+	if (i === word.length) {
+		return [];
+	} else if (j === target.length) {
+		return null;
+	} else if (word[i] !== target[j].toLowerCase()) {
+		return null;
+	} else {
+		let result = null;
+		let nextWordIndex = j + 1;
+		result = _matchesWords(word, target, i + 1, j + 1);
+		while (!result && (nextWordIndex = nextWord(target, nextWordIndex)) < target.length) {
+			result = _matchesWords(word, target, i + 1, nextWordIndex);
+			nextWordIndex++;
+		}
+		return result === null ? null : join({ start: j, end: j + 1 }, result);
+	}
+}
+
+function nextWord(word: string, start: number): number {
+	for (let i = start; i < word.length; i++) {
+		let c = word.charCodeAt(i);
+		if (isWhitespace(c) || (i > 0 && isWhitespace(word.charCodeAt(i - 1)))) {
+			return i;
+		}
+	}
+	return word.length;
+}
+
 // Fuzzy
 
 export enum SubstringMatching {
@@ -249,17 +326,20 @@ export enum SubstringMatching {
 	Separate
 }
 
-const fuzzyContiguousFilter = or(matchesPrefix, matchesCamelCase, matchesContiguousSubString);
+export const fuzzyContiguousFilter = or(matchesPrefix, matchesCamelCase, matchesContiguousSubString);
 const fuzzySeparateFilter = or(matchesPrefix, matchesCamelCase, matchesSubString);
-const fuzzyRegExpCache: { [key: string]: RegExp; } = {};
+const fuzzyRegExpCache = new BoundedLinkedMap<RegExp>(10000); // bounded to 10000 elements
 
 export function matchesFuzzy(word: string, wordToMatchAgainst: string, enableSeparateSubstringMatching = false): IMatch[] {
+	if (typeof word !== 'string' || typeof wordToMatchAgainst !== 'string') {
+		return null; // return early for invalid input
+	}
 
 	// Form RegExp for wildcard matches
-	let regexp = fuzzyRegExpCache[word];
+	let regexp = fuzzyRegExpCache.get(word);
 	if (!regexp) {
 		regexp = new RegExp(strings.convertSimple2RegExpPattern(word), 'i');
-		fuzzyRegExpCache[word] = regexp;
+		fuzzyRegExpCache.set(word, regexp);
 	}
 
 	// RegExp Filter

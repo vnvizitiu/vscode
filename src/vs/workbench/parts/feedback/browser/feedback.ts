@@ -7,12 +7,16 @@
 
 import 'vs/css!./media/feedback';
 import nls = require('vs/nls');
-import {IDisposable} from 'vs/base/common/lifecycle';
-import {Builder, $} from 'vs/base/browser/builder';
-import {Dropdown} from 'vs/base/browser/ui/dropdown/dropdown';
-import {IContextViewService} from 'vs/platform/contextview/browser/contextView';
-import {ITelemetryService} from 'vs/platform/telemetry/common/telemetry';
-import {IWorkspaceContextService} from 'vs/workbench/services/workspace/common/contextService';
+import { IDisposable } from 'vs/base/common/lifecycle';
+import { Builder, $ } from 'vs/base/browser/builder';
+import { Dropdown } from 'vs/base/browser/ui/dropdown/dropdown';
+import { IContextViewService } from 'vs/platform/contextview/browser/contextView';
+import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
+import product from 'vs/platform/product';
+import * as dom from 'vs/base/browser/dom';
+import { ICommandService } from 'vs/platform/commands/common/commands';
+import * as errors from 'vs/base/common/errors';
+import { IIntegrityService } from 'vs/platform/integrity/common/integrity';
 
 export interface IFeedback {
 	feedback: string;
@@ -21,6 +25,7 @@ export interface IFeedback {
 
 export interface IFeedbackService {
 	submitFeedback(feedback: IFeedback): void;
+	getCharacterLimit(sentiment: number): number;
 }
 
 export interface IFeedbackDropdownOptions {
@@ -35,7 +40,7 @@ enum FormEvent {
 }
 
 export class FeedbackDropdown extends Dropdown {
-	protected static MAX_FEEDBACK_CHARS: number = 140;
+	protected maxFeedbackCharacters: number;
 
 	protected feedback: string;
 	protected sentiment: number;
@@ -50,21 +55,32 @@ export class FeedbackDropdown extends Dropdown {
 	protected smileyInput: Builder;
 	protected frownyInput: Builder;
 	protected sendButton: Builder;
+	protected remainingCharacterCount: Builder;
 
 	protected requestFeatureLink: string;
 	protected reportIssueLink: string;
+
+	private _isPure: boolean;
 
 	constructor(
 		container: HTMLElement,
 		options: IFeedbackDropdownOptions,
 		@ITelemetryService protected telemetryService: ITelemetryService,
-		@IWorkspaceContextService private contextService: IWorkspaceContextService
+		@ICommandService private commandService: ICommandService,
+		@IIntegrityService protected integrityService: IIntegrityService
 	) {
 		super(container, {
 			contextViewProvider: options.contextViewProvider,
 			labelRenderer: (container: HTMLElement): IDisposable => {
 				$(container).addClass('send-feedback');
 				return null;
+			}
+		});
+
+		this._isPure = true;
+		this.integrityService.isPure().then(result => {
+			if (!result.isPure) {
+				this._isPure = false;
 			}
 		});
 
@@ -75,6 +91,7 @@ export class FeedbackDropdown extends Dropdown {
 
 		this.feedback = '';
 		this.sentiment = 1;
+		this.maxFeedbackCharacters = this.feedbackService.getCharacterLimit(this.sentiment);
 
 		this.feedbackForm = null;
 		this.feedbackDescriptionInput = null;
@@ -84,13 +101,12 @@ export class FeedbackDropdown extends Dropdown {
 
 		this.sendButton = null;
 
-		const env = contextService.getConfiguration().env;
-		this.reportIssueLink = env.sendASmile.reportIssueUrl;
-		this.requestFeatureLink = env.sendASmile.requestFeatureUrl;
+		this.reportIssueLink = product.reportIssueUrl;
+		this.requestFeatureLink = product.requestFeatureUrl;
 	}
 
 	public renderContents(container: HTMLElement): IDisposable {
-		let $form = $('form.feedback-form').attr({
+		const $form = $('form.feedback-form').attr({
 			action: 'javascript:void(0);',
 			tabIndex: '-1'
 		}).appendTo(container);
@@ -105,12 +121,18 @@ export class FeedbackDropdown extends Dropdown {
 			this.hide();
 		}).appendTo($form);
 
-		let $content = $('div.content').appendTo($form);
+		const $content = $('div.content').appendTo($form);
 
-		let $sentimentContainer = $('div').appendTo($content);
+		const $sentimentContainer = $('div').appendTo($content);
+		if (!this._isPure) {
+			$('span').text(nls.localize("patchedVersion1", "Your installation is corrupt.")).appendTo($sentimentContainer);
+			$('br').appendTo($sentimentContainer);
+			$('span').text(nls.localize("patchedVersion2", "Please specify this if you submit a bug.")).appendTo($sentimentContainer);
+			$('br').appendTo($sentimentContainer);
+		}
 		$('span').text(nls.localize("sentiment", "How was your experience?")).appendTo($sentimentContainer);
 
-		let $feedbackSentiment = $('div.feedback-sentiment').appendTo($sentimentContainer);
+		const $feedbackSentiment = $('div.feedback-sentiment').appendTo($sentimentContainer);
 
 		this.smileyInput = $('div').addClass('sentiment smile').attr({
 			'aria-checked': 'false',
@@ -135,37 +157,40 @@ export class FeedbackDropdown extends Dropdown {
 			this.frownyInput.addClass('checked').attr('aria-checked', 'true');
 		}
 
-		let $contactUs = $('div.contactus').appendTo($content);
+		const $contactUs = $('div.contactus').appendTo($content);
 
 		$('span').text(nls.localize("other ways to contact us", "Other ways to contact us")).appendTo($contactUs);
 
-		let $contactUsContainer = $('div.channels').appendTo($contactUs);
+		const $contactUsContainer = $('div.channels').appendTo($contactUs);
 
-		$('div').append($('a').attr('target', '_blank').attr('href', this.reportIssueLink).text(nls.localize("submit a bug", "Submit a bug")).attr('tabindex', '0'))
+		$('div').append($('a').attr('target', '_blank').attr('href', '#').text(nls.localize("submit a bug", "Submit a bug")).attr('tabindex', '0'))
+			.on('click', event => {
+				dom.EventHelper.stop(event);
+				this.commandService.executeCommand('workbench.action.reportIssues').done(null, errors.onUnexpectedError);
+			})
 			.appendTo($contactUsContainer);
 
 		$('div').append($('a').attr('target', '_blank').attr('href', this.requestFeatureLink).text(nls.localize("request a missing feature", "Request a missing feature")).attr('tabindex', '0'))
 			.appendTo($contactUsContainer);
 
-		let $charCounter = $('span.char-counter').text(this.getCharCountText(0));
+		this.remainingCharacterCount = $('span.char-counter').text(this.getCharCountText(0));
 
 		$('h3').text(nls.localize("tell us why?", "Tell us why?"))
-			.append($charCounter)
+			.append(this.remainingCharacterCount)
 			.appendTo($form);
 
 		this.feedbackDescriptionInput = <HTMLTextAreaElement>$('textarea.feedback-description').attr({
 			rows: 3,
-			maxlength: FeedbackDropdown.MAX_FEEDBACK_CHARS,
+			maxlength: this.maxFeedbackCharacters,
 			'aria-label': nls.localize("commentsHeader", "Comments")
 		})
 			.text(this.feedback).attr('required', 'required')
 			.on('keyup', () => {
-				$charCounter.text(this.getCharCountText(this.feedbackDescriptionInput.value.length));
-				this.feedbackDescriptionInput.value ? this.sendButton.removeAttribute('disabled') : this.sendButton.attr('disabled', '');
+				this.updateCharCountText();
 			})
 			.appendTo($form).domFocus().getHTMLElement();
 
-		let $buttons = $('div.form-buttons').appendTo($form);
+		const $buttons = $('div.form-buttons').appendTo($form);
 
 		this.sendButton = this.invoke($('input.send').type('submit').attr('disabled', '').value(nls.localize('tweet', "Tweet")).appendTo($buttons), () => {
 			if (this.isSendingFeedback) {
@@ -185,12 +210,17 @@ export class FeedbackDropdown extends Dropdown {
 	}
 
 	private getCharCountText(charCount: number): string {
-		let remaining = FeedbackDropdown.MAX_FEEDBACK_CHARS - charCount;
-		let text = (remaining === 1)
+		const remaining = this.maxFeedbackCharacters - charCount;
+		const text = (remaining === 1)
 			? nls.localize("character left", "character left")
 			: nls.localize("characters left", "characters left");
 
 		return '(' + remaining + ' ' + text + ')';
+	}
+
+	private updateCharCountText(): void {
+		this.remainingCharacterCount.text(this.getCharCountText(this.feedbackDescriptionInput.value.length));
+		this.feedbackDescriptionInput.value ? this.sendButton.removeAttribute('disabled') : this.sendButton.attr('disabled', '');
 	}
 
 	protected setSentiment(smile: boolean): void {
@@ -206,13 +236,16 @@ export class FeedbackDropdown extends Dropdown {
 			this.smileyInput.attr('aria-checked', 'false');
 		}
 		this.sentiment = smile ? 1 : 0;
+		this.maxFeedbackCharacters = this.feedbackService.getCharacterLimit(this.sentiment);
+		this.updateCharCountText();
+		$(this.feedbackDescriptionInput).attr({ maxlength: this.maxFeedbackCharacters });
 	}
 
 	protected invoke(element: Builder, callback: () => void): Builder {
 		element.on('click', callback);
 		element.on('keypress', (e) => {
 			if (e instanceof KeyboardEvent) {
-				let keyboardEvent = <KeyboardEvent>e;
+				const keyboardEvent = <KeyboardEvent>e;
 				if (keyboardEvent.keyCode === 13 || keyboardEvent.keyCode === 32) { // Enter or Spacebar
 					callback();
 				}
@@ -236,7 +269,7 @@ export class FeedbackDropdown extends Dropdown {
 
 	public onEvent(e: Event, activeElement: HTMLElement): void {
 		if (e instanceof KeyboardEvent) {
-			let keyboardEvent = <KeyboardEvent>e;
+			const keyboardEvent = <KeyboardEvent>e;
 			if (keyboardEvent.keyCode === 27) { // Escape
 				this.hide();
 			}
@@ -291,6 +324,7 @@ export class FeedbackDropdown extends Dropdown {
 			this.feedbackDescriptionInput.value = '';
 		}
 		this.sentiment = 1;
+		this.maxFeedbackCharacters = this.feedbackService.getCharacterLimit(this.sentiment);
 		this.aliasEnabled = false;
 	}
 }

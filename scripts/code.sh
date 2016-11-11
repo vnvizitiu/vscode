@@ -10,27 +10,32 @@ fi
 function code() {
 	cd $ROOT
 
+	if [[ "$OSTYPE" == "darwin"* ]]; then
+		NAME=`node -p "require('./product.json').nameLong"`
+		CODE="./.build/electron/$NAME.app/Contents/MacOS/Electron"
+	else
+		NAME=`node -p "require('./product.json').applicationName"`
+		CODE=".build/electron/$NAME"
+	fi
+
 	# Node modules
 	test -d node_modules || ./scripts/npm.sh install
 
 	# Get electron
-	node node_modules/gulp/bin/gulp.js electron
+	test -f "$CODE" || ./node_modules/.bin/gulp electron
 
 	# Build
-	test -d out || gulp compile
+	test -d out || ./node_modules/.bin/gulp compile
 
 	# Configuration
 	export NODE_ENV=development
 	export VSCODE_DEV=1
+	export VSCODE_CLI=1
 	export ELECTRON_ENABLE_LOGGING=1
 	export ELECTRON_ENABLE_STACK_DUMPING=1
 
 	# Launch Code
-	if [[ "$OSTYPE" == "darwin"* ]]; then
-		exec ./.build/electron/Electron.app/Contents/MacOS/Electron . "$@"
-	else
-		exec ./.build/electron/electron . "$@"
-	fi
+	exec "$CODE" . "$@"
 }
 
 code "$@"

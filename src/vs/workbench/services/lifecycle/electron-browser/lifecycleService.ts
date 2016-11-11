@@ -4,101 +4,106 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {TPromise} from 'vs/base/common/winjs.base';
-import errors = require('vs/base/common/errors');
-import {IMessageService} from 'vs/platform/message/common/message';
-import {BaseLifecycleService} from 'vs/platform/lifecycle/common/baseLifecycleService';
-import {IWindowService} from 'vs/workbench/services/window/electron-browser/windowService';
-import severity from 'vs/base/common/severity';
+import { TPromise } from 'vs/base/common/winjs.base';
+import Severity from 'vs/base/common/severity';
+import { toErrorMessage } from 'vs/base/common/errorMessage';
+import { ILifecycleService, ShutdownEvent } from 'vs/platform/lifecycle/common/lifecycle';
+import { IMessageService } from 'vs/platform/message/common/message';
+import { IWindowIPCService } from 'vs/workbench/services/window/electron-browser/windowService';
+import { ipcRenderer as ipc } from 'electron';
+import Event, { Emitter } from 'vs/base/common/event';
 
-import {ipcRenderer as ipc} from 'electron';
+export class LifecycleService implements ILifecycleService {
 
-export class LifecycleService extends BaseLifecycleService {
+	public _serviceBrand: any;
+
+	private _onWillShutdown = new Emitter<ShutdownEvent>();
+	private _onShutdown = new Emitter<void>();
+
+	private _willShutdown: boolean;
+	private _quitRequested: boolean;
 
 	constructor(
-		private messageService: IMessageService,
-		private windowService: IWindowService
+		@IMessageService private messageService: IMessageService,
+		@IWindowIPCService private windowService: IWindowIPCService
 	) {
-		super();
-
 		this.registerListeners();
 	}
 
+	public get willShutdown(): boolean {
+		return this._willShutdown;
+	}
+
+	public get quitRequested(): boolean {
+		return this._quitRequested;
+	}
+
+	public get onWillShutdown(): Event<ShutdownEvent> {
+		return this._onWillShutdown.event;
+	}
+
+	public get onShutdown(): Event<void> {
+		return this._onShutdown.event;
+	}
+
 	private registerListeners(): void {
-		let windowId = this.windowService.getWindowId();
+		const windowId = this.windowService.getWindowId();
 
 		// Main side indicates that window is about to unload, check for vetos
-		ipc.on('vscode:beforeUnload', (event, reply: { okChannel: string, cancelChannel: string }) => {
-			let veto = this.beforeUnload();
+		ipc.on('vscode:beforeUnload', (event, reply: { okChannel: string, cancelChannel: string, quitRequested: boolean }) => {
+			this._willShutdown = true;
+			this._quitRequested = reply.quitRequested;
 
-			if (typeof veto === 'boolean') {
-				ipc.send(veto ? reply.cancelChannel : reply.okChannel, windowId);
-			}
-
-			else {
-				veto.done(v => ipc.send(v ? reply.cancelChannel : reply.okChannel, windowId));
-			}
+			// trigger onWillShutdown events and veto collecting
+			this.onBeforeUnload(reply.quitRequested).done(veto => {
+				this._quitRequested = false;
+				if (veto) {
+					this._willShutdown = false; // reset this flag since the shutdown has been vetoed!
+					ipc.send(reply.cancelChannel, windowId);
+				} else {
+					this._onShutdown.fire();
+					ipc.send(reply.okChannel, windowId);
+				}
+			});
 		});
 	}
 
-	private beforeUnload(): boolean|TPromise<boolean> {
-		let veto = this.vetoShutdown();
+	private onBeforeUnload(quitRequested: boolean): TPromise<boolean> {
+		const vetos: (boolean | TPromise<boolean>)[] = [];
 
-		if (typeof veto === 'boolean') {
-			return this.handleVeto(veto);
+		this._onWillShutdown.fire({
+			veto(value) {
+				vetos.push(value);
+			},
+			quitRequested
+		});
+
+		if (vetos.length === 0) {
+			return TPromise.as(false);
 		}
 
-		else {
-			return veto.then(v => this.handleVeto(v));
-		}
-	}
+		const promises: TPromise<void>[] = [];
+		let lazyValue = false;
 
-	private handleVeto(veto: boolean): boolean {
-		if (!veto) {
-			try {
-				this.fireShutdown();
-			} catch (error) {
-				errors.onUnexpectedError(error); // unexpected program error and we cause shutdown to cancel in this case
+		for (let valueOrPromise of vetos) {
 
-				return false;
-			}
-		}
-
-		return veto;
-	}
-
-	private vetoShutdown(): boolean|TPromise<boolean> {
-		let participants = this.beforeShutdownParticipants;
-		let vetoPromises: TPromise<void>[] = [];
-		let hasPromiseWithVeto = false;
-
-		for (let i = 0; i < participants.length; i++) {
-			let participantVeto = participants[i].beforeShutdown();
-			if (participantVeto === true) {
-				return true; // return directly when any veto was provided
+			// veto, done
+			if (valueOrPromise === true) {
+				return TPromise.as(true);
 			}
 
-			else if (participantVeto === false) {
-				continue; // skip
+			if (TPromise.is(valueOrPromise)) {
+				promises.push(valueOrPromise.then(value => {
+					if (value) {
+						lazyValue = true; // veto, done
+					}
+				}, err => {
+					// error, treated like a veto, done
+					this.messageService.show(Severity.Error, toErrorMessage(err));
+					lazyValue = true;
+				}));
 			}
-
-			// We have a promise
-			let vetoPromise = (<TPromise<boolean>>participantVeto).then(veto => {
-				if (veto) {
-					hasPromiseWithVeto = true;
-				}
-			}, (error) => {
-				hasPromiseWithVeto = true;
-				this.messageService.show(severity.Error, errors.toErrorMessage(error));
-			});
-
-			vetoPromises.push(vetoPromise);
 		}
-
-		if (vetoPromises.length === 0) {
-			return false; // return directly when no veto was provided
-		}
-
-		return TPromise.join(vetoPromises).then(() => hasPromiseWithVeto);
+		return TPromise.join(promises).then(() => lazyValue);
 	}
 }

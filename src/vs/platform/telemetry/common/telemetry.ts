@@ -4,13 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import Lifecycle = require('vs/base/common/lifecycle');
-import Timer = require('vs/base/common/timer');
-import {createDecorator, ServiceIdentifier, IInstantiationService} from 'vs/platform/instantiation/common/instantiation';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { guessMimeTypes } from 'vs/base/common/mime';
+import paths = require('vs/base/common/paths');
+import URI from 'vs/base/common/uri';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
+import { IStorageService } from 'vs/platform/storage/common/storage';
 
-export const ID = 'telemetryService';
-
-export const ITelemetryService = createDecorator<ITelemetryService>(ID);
+export const ITelemetryService = createDecorator<ITelemetryService>('telemetryService');
 
 export interface ITelemetryInfo {
 	sessionId: string;
@@ -18,61 +20,111 @@ export interface ITelemetryInfo {
 	instanceId: string;
 }
 
-export interface ITelemetryService extends Lifecycle.IDisposable {
-	serviceId: ServiceIdentifier<any>;
+export interface ITelemetryExperiments {
+	showDefaultViewlet: boolean;
+	showCommandsWatermark: boolean;
+	openUntitledFile: boolean;
+}
+
+export interface ITelemetryService {
+
+	_serviceBrand: any;
 
 	/**
 	 * Sends a telemetry event that has been privacy approved.
 	 * Do not call this unless you have been given approval.
 	 */
-	publicLog(eventName: string, data?: any): void;
+	publicLog(eventName: string, data?: any): TPromise<void>;
 
-	/**
-	 * Starts a telemetry timer. Call stop() to send the event.
-	 */
-	start(name: string, data?: any): Timer.ITimerEvent;
+	getTelemetryInfo(): TPromise<ITelemetryInfo>;
 
-	/**
-	 * Session Id
-	 */
-	getSessionId(): string;
+	isOptedIn: boolean;
 
-	/**
-	 * a unique Id that is not hardware specific
-	 */
-	getInstanceId(): string;
-
-	/**
-	 * a hardware specific machine Id
-	 */
-	getMachineId(): string;
-
-	getTelemetryInfo(): Thenable<ITelemetryInfo>;
-
-	/**
-	 * Appender operations
-	 */
-	getAppendersCount(): number;
-	getAppenders(): ITelemetryAppender[];
-	addTelemetryAppender(appender: ITelemetryAppender): void;
-	removeTelemetryAppender(appender: ITelemetryAppender): void;
-	setInstantiationService(instantiationService: IInstantiationService): void;
+	getExperiments(): ITelemetryExperiments;
 }
 
-export interface ITelemetryAppender extends Lifecycle.IDisposable {
-	log(eventName: string, data?: any): void;
+export const defaultExperiments: ITelemetryExperiments = {
+	showDefaultViewlet: false,
+	showCommandsWatermark: false,
+	openUntitledFile: true
+};
+
+export const NullTelemetryService = {
+	_serviceBrand: undefined,
+	_experiments: defaultExperiments,
+	publicLog(eventName: string, data?: any) {
+		return TPromise.as<void>(null);
+	},
+	isOptedIn: true,
+	getTelemetryInfo(): TPromise<ITelemetryInfo> {
+		return TPromise.as({
+			instanceId: 'someValue.instanceId',
+			sessionId: 'someValue.sessionId',
+			machineId: 'someValue.machineId'
+		});
+	},
+	getExperiments(): ITelemetryExperiments {
+		return this._experiments;
+	}
+};
+
+export function loadExperiments(storageService: IStorageService, configurationService: IConfigurationService): ITelemetryExperiments {
+
+	const key = 'experiments.randomness';
+	let valueString = storageService.get(key);
+	if (!valueString) {
+		valueString = Math.random().toString();
+		storageService.store(key, valueString);
+	}
+
+	const random0 = parseFloat(valueString);
+	let [random1, showDefaultViewlet] = splitRandom(random0);
+	const [random2, showCommandsWatermark] = splitRandom(random1);
+	let [, openUntitledFile] = splitRandom(random2);
+
+	// is the user a first time user?
+	let isNewSession = storageService.get('telemetry.lastSessionDate') ? false : true;
+	if (!isNewSession) {
+		// for returning users we fall back to the default configuration for the sidebar and the initially opened, empty editor
+		showDefaultViewlet = defaultExperiments.showDefaultViewlet;
+		openUntitledFile = defaultExperiments.openUntitledFile;
+	}
+
+	return applyOverrides(configurationService, {
+		showDefaultViewlet,
+		showCommandsWatermark,
+		openUntitledFile
+	});
 }
 
-export interface ITelemetryServiceConfig {
-	enableTelemetry?: boolean;
-	userOptIn?: boolean;
-
-	enableHardIdle?: boolean;
-	enableSoftIdle?: boolean;
-	sessionID?: string;
-	commitHash?: string;
-	version?: string;
+export function applyOverrides(configurationService: IConfigurationService, experiments: ITelemetryExperiments): ITelemetryExperiments {
+	const config: any = configurationService.getConfiguration('telemetry');
+	const experimentsConfig = config && config.experiments || {};
+	Object.keys(experiments).forEach(key => {
+		if (key in experimentsConfig) {
+			experiments[key] = experimentsConfig[key];
+		}
+	});
+	return experiments;
 }
+
+function splitRandom(random: number): [number, boolean] {
+	const scaled = random * 2;
+	const i = Math.floor(scaled);
+	return [scaled - i, i === 1];
+}
+
+export interface ITelemetryAppender {
+	log(eventName: string, data: any): void;
+}
+
+export function combinedAppender(...appenders: ITelemetryAppender[]): ITelemetryAppender {
+	return { log: (e, d) => appenders.forEach(a => a.log(e, d)) };
+}
+
+export const NullAppender: ITelemetryAppender = { log: () => null };
+
+// --- util
 
 export function anonymize(input: string): string {
 	if (!input) {
@@ -97,4 +149,9 @@ export function anonymize(input: string): string {
 		r += ch;
 	}
 	return r;
+}
+
+export function telemetryURIDescriptor(uri: URI): any {
+	const fsPath = uri && uri.fsPath;
+	return fsPath ? { mimeType: guessMimeTypes(fsPath).join(', '), ext: paths.extname(fsPath), path: anonymize(fsPath) } : {};
 }

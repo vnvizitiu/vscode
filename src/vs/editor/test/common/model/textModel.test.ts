@@ -5,33 +5,144 @@
 'use strict';
 
 import * as assert from 'assert';
-import {Position} from 'vs/editor/common/core/position';
-import {Range} from 'vs/editor/common/core/range';
-import {TextModel} from 'vs/editor/common/model/textModel';
-import {DefaultEndOfLine} from 'vs/editor/common/editorCommon';
+import { Position } from 'vs/editor/common/core/position';
+import { Range } from 'vs/editor/common/core/range';
+import { TextModel } from 'vs/editor/common/model/textModel';
+import { DefaultEndOfLine, IRawText } from 'vs/editor/common/editorCommon';
 
-function testGuessIndentation(expectedInsertSpaces:boolean, expectedTabSize:number, text:string[], msg?:string): void {
-	var m = new TextModel([], TextModel.toRawText(text.join('\n'), DefaultEndOfLine.LF));
-	var r = m.guessIndentation(1337);
+function testGuessIndentation(defaultInsertSpaces: boolean, defaultTabSize: number, expectedInsertSpaces: boolean, expectedTabSize: number, text: string[], msg?: string): void {
+	var m = new TextModel([], TextModel.toRawText(text.join('\n'), {
+		tabSize: defaultTabSize,
+		insertSpaces: defaultInsertSpaces,
+		detectIndentation: true,
+		defaultEOL: DefaultEndOfLine.LF,
+		trimAutoWhitespace: true
+	}));
+	var r = m.getOptions();
 	m.dispose();
 
 	assert.equal(r.insertSpaces, expectedInsertSpaces, msg);
 	assert.equal(r.tabSize, expectedTabSize, msg);
 }
 
-function guessesTabs(expectedTabSize:number, text:string[], msg?:string): void {
-	testGuessIndentation(false, expectedTabSize, text, msg);
+function assertGuess(expectedInsertSpaces: boolean, expectedTabSize: number, text: string[], msg?: string): void {
+	if (typeof expectedInsertSpaces === 'undefined') {
+		// cannot guess insertSpaces
+		if (typeof expectedTabSize === 'undefined') {
+			// cannot guess tabSize
+			testGuessIndentation(true, 13370, true, 13370, text, msg);
+			testGuessIndentation(false, 13371, false, 13371, text, msg);
+		} else {
+			// can guess tabSize
+			testGuessIndentation(true, 13370, true, expectedTabSize, text, msg);
+			testGuessIndentation(false, 13371, false, expectedTabSize, text, msg);
+		}
+	} else {
+		// can guess insertSpaces
+		if (typeof expectedTabSize === 'undefined') {
+			// cannot guess tabSize
+			testGuessIndentation(true, 13370, expectedInsertSpaces, 13370, text, msg);
+			testGuessIndentation(false, 13371, expectedInsertSpaces, 13371, text, msg);
+		} else {
+			// can guess tabSize
+			testGuessIndentation(true, 13370, expectedInsertSpaces, expectedTabSize, text, msg);
+			testGuessIndentation(false, 13371, expectedInsertSpaces, expectedTabSize, text, msg);
+		}
+	}
 }
 
-function guessesSpaces(expectedTabSize:number, text:string[], msg?:string): void {
-	testGuessIndentation(true, expectedTabSize, text, msg);
-}
+suite('TextModel.toRawText', () => {
+
+	function testToRawText(text: string, expected: IRawText): void {
+		let actual = TextModel.toRawText(text, TextModel.DEFAULT_CREATION_OPTIONS);
+		assert.deepEqual(actual, expected);
+	}
+
+	test('one line text', () => {
+		testToRawText('Hello world!', {
+			BOM: '',
+			EOL: '\n',
+			length: 12,
+			'lines': [
+				'Hello world!'
+			],
+			containsRTL: false,
+			options: {
+				defaultEOL: DefaultEndOfLine.LF,
+				insertSpaces: true,
+				tabSize: 4,
+				trimAutoWhitespace: true,
+			}
+		});
+	});
+
+	test('multiline text', () => {
+		testToRawText('Hello,\r\ndear friend\nHow\rare\r\nyou?', {
+			BOM: '',
+			EOL: '\r\n',
+			length: 33,
+			'lines': [
+				'Hello,',
+				'dear friend',
+				'How',
+				'are',
+				'you?'
+			],
+			containsRTL: false,
+			options: {
+				defaultEOL: DefaultEndOfLine.LF,
+				insertSpaces: true,
+				tabSize: 4,
+				trimAutoWhitespace: true,
+			}
+		});
+	});
+
+	test('containsRTL 1', () => {
+		testToRawText('Hello,\nזוהי עובדה מבוססת שדעתו', {
+			BOM: '',
+			EOL: '\n',
+			length: 30,
+			'lines': [
+				'Hello,',
+				'זוהי עובדה מבוססת שדעתו'
+			],
+			containsRTL: true,
+			options: {
+				defaultEOL: DefaultEndOfLine.LF,
+				insertSpaces: true,
+				tabSize: 4,
+				trimAutoWhitespace: true,
+			}
+		});
+	});
+
+	test('containsRTL 2', () => {
+		testToRawText('Hello,\nهناك حقيقة مثبتة منذ زمن طويل', {
+			BOM: '',
+			EOL: '\n',
+			length: 36,
+			'lines': [
+				'Hello,',
+				'هناك حقيقة مثبتة منذ زمن طويل'
+			],
+			containsRTL: true,
+			options: {
+				defaultEOL: DefaultEndOfLine.LF,
+				insertSpaces: true,
+				tabSize: 4,
+				trimAutoWhitespace: true,
+			}
+		});
+	});
+
+});
 
 suite('Editor Model - TextModel', () => {
 
 	test('getValueLengthInRange', () => {
 
-		var m = new TextModel([], TextModel.toRawText('My First Line\r\nMy Second Line\r\nMy Third Line', DefaultEndOfLine.LF));
+		var m = new TextModel([], TextModel.toRawText('My First Line\r\nMy Second Line\r\nMy Third Line', TextModel.DEFAULT_CREATION_OPTIONS));
 		assert.equal(m.getValueLengthInRange(new Range(1, 1, 1, 1)), ''.length);
 		assert.equal(m.getValueLengthInRange(new Range(1, 1, 1, 2)), 'M'.length);
 		assert.equal(m.getValueLengthInRange(new Range(1, 2, 1, 3)), 'y'.length);
@@ -44,7 +155,7 @@ suite('Editor Model - TextModel', () => {
 		assert.equal(m.getValueLengthInRange(new Range(1, 2, 3, 1000)), 'y First Line\r\nMy Second Line\r\nMy Third Line'.length);
 		assert.equal(m.getValueLengthInRange(new Range(1, 1, 1000, 1000)), 'My First Line\r\nMy Second Line\r\nMy Third Line'.length);
 
-		m = new TextModel([], TextModel.toRawText('My First Line\nMy Second Line\nMy Third Line', DefaultEndOfLine.LF));
+		m = new TextModel([], TextModel.toRawText('My First Line\nMy Second Line\nMy Third Line', TextModel.DEFAULT_CREATION_OPTIONS));
 		assert.equal(m.getValueLengthInRange(new Range(1, 1, 1, 1)), ''.length);
 		assert.equal(m.getValueLengthInRange(new Range(1, 1, 1, 2)), 'M'.length);
 		assert.equal(m.getValueLengthInRange(new Range(1, 2, 1, 3)), 'y'.length);
@@ -60,7 +171,7 @@ suite('Editor Model - TextModel', () => {
 
 	test('guess indentation 1', () => {
 
-		guessesSpaces(1337, [
+		assertGuess(undefined, undefined, [
 			'x',
 			'x',
 			'x',
@@ -70,7 +181,7 @@ suite('Editor Model - TextModel', () => {
 			'x'
 		], 'no clues');
 
-		guessesTabs(1337, [
+		assertGuess(false, undefined, [
 			'\tx',
 			'x',
 			'x',
@@ -80,7 +191,7 @@ suite('Editor Model - TextModel', () => {
 			'x'
 		], 'no spaces, 1xTAB');
 
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'  x',
 			'x',
 			'x',
@@ -90,7 +201,7 @@ suite('Editor Model - TextModel', () => {
 			'x'
 		], '1x2');
 
-		guessesTabs(1337, [
+		assertGuess(false, undefined, [
 			'\tx',
 			'\tx',
 			'\tx',
@@ -100,7 +211,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx'
 		], '7xTAB');
 
-		guessesSpaces(2, [
+		assertGuess(undefined, 2, [
 			'\tx',
 			'  x',
 			'\tx',
@@ -110,7 +221,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx',
 			'  x',
 		], '4x2, 4xTAB');
-		guessesTabs(1337, [
+		assertGuess(false, undefined, [
 			'\tx',
 			' x',
 			'\tx',
@@ -120,7 +231,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx',
 			' x'
 		], '4x1, 4xTAB');
-		guessesTabs(2, [
+		assertGuess(false, 2, [
 			'\tx',
 			'\tx',
 			'  x',
@@ -131,7 +242,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx',
 			'  x',
 		], '4x2, 5xTAB');
-		guessesTabs(2, [
+		assertGuess(false, 2, [
 			'\tx',
 			'\tx',
 			'x',
@@ -142,7 +253,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx',
 			'  x',
 		], '1x2, 5xTAB');
-		guessesTabs(4, [
+		assertGuess(false, 4, [
 			'\tx',
 			'\tx',
 			'x',
@@ -153,7 +264,7 @@ suite('Editor Model - TextModel', () => {
 			'\tx',
 			'    x',
 		], '1x4, 5xTAB');
-		guessesTabs(2, [
+		assertGuess(false, 2, [
 			'\tx',
 			'\tx',
 			'x',
@@ -165,7 +276,7 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 		], '1x2, 1x4, 5xTAB');
 
-		guessesSpaces(1337, [
+		assertGuess(undefined, undefined, [
 			'x',
 			' x',
 			' x',
@@ -175,7 +286,17 @@ suite('Editor Model - TextModel', () => {
 			' x',
 			' x'
 		], '7x1 - 1 space is never guessed as an indentation');
-		guessesSpaces(1337, [
+		assertGuess(true, undefined, [
+			'x',
+			'          x',
+			' x',
+			' x',
+			' x',
+			' x',
+			' x',
+			' x'
+		], '1x10, 6x1');
+		assertGuess(undefined, undefined, [
 			'',
 			'  ',
 			'    ',
@@ -185,7 +306,7 @@ suite('Editor Model - TextModel', () => {
 			'            ',
 			'              ',
 		], 'whitespace lines don\'t count');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'   x',
 			'   x',
@@ -199,7 +320,7 @@ suite('Editor Model - TextModel', () => {
 			'   x',
 			'    x',
 		], 'odd number is not allowed: 6x3, 3x4');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'     x',
 			'     x',
@@ -213,7 +334,7 @@ suite('Editor Model - TextModel', () => {
 			'     x',
 			'    x',
 		], 'odd number is not allowed: 6x5, 3x4');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'       x',
 			'       x',
@@ -227,7 +348,7 @@ suite('Editor Model - TextModel', () => {
 			'       x',
 			'    x',
 		], 'odd number is not allowed: 6x7, 3x4');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'  x',
@@ -240,7 +361,7 @@ suite('Editor Model - TextModel', () => {
 			'  x',
 		], '8x2');
 
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'  x',
@@ -254,7 +375,7 @@ suite('Editor Model - TextModel', () => {
 			'  x',
 			'  x',
 		], '8x2');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'    x',
@@ -268,7 +389,7 @@ suite('Editor Model - TextModel', () => {
 			'  x',
 			'    x',
 		], '4x2, 4x4');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'  x',
@@ -282,7 +403,7 @@ suite('Editor Model - TextModel', () => {
 			'  x',
 			'    x',
 		], '6x2, 3x4');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'  x',
@@ -294,7 +415,7 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 			'    x',
 		], '4x2, 4x4');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'    x',
@@ -304,7 +425,7 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 			'    x',
 		], '2x2, 4x4');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'    x',
 			'    x',
@@ -318,7 +439,7 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 			'    x',
 		], '8x4');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'    x',
@@ -330,7 +451,7 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 			'      x',
 		], '2x2, 4x4, 2x6');
-		guessesSpaces(2, [
+		assertGuess(true, 2, [
 			'x',
 			'  x',
 			'    x',
@@ -339,7 +460,7 @@ suite('Editor Model - TextModel', () => {
 			'      x',
 			'        x',
 		], '1x2, 2x4, 2x6, 1x8');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'    x',
 			'    x',
@@ -353,7 +474,7 @@ suite('Editor Model - TextModel', () => {
 			'     x',
 			'        x',
 		], '6x4, 2x5, 2x8');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'    x',
 			'    x',
@@ -362,7 +483,7 @@ suite('Editor Model - TextModel', () => {
 			'        x',
 			'        x',
 		], '3x4, 1x5, 2x8');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			'x',
 			'    x',
@@ -378,7 +499,7 @@ suite('Editor Model - TextModel', () => {
 			'        x',
 			'        x',
 		], '6x4, 2x5, 4x8');
-		guessesSpaces(4, [
+		assertGuess(true, 4, [
 			'x',
 			' x',
 			' x',
@@ -390,35 +511,456 @@ suite('Editor Model - TextModel', () => {
 			'    x',
 			'    x',
 		], '5x1, 2x0, 1x3, 2x4');
+		assertGuess(false, undefined, [
+			'\t x',
+			' \t x',
+			'\tx'
+		], 'mixed whitespace 1');
+		assertGuess(false, 4, [
+			'\tx',
+			'\t    x'
+		], 'mixed whitespace 2');
+	});
+
+	test('validatePosition', () => {
+
+		let m = new TextModel([], TextModel.toRawText('line one\nline two', TextModel.DEFAULT_CREATION_OPTIONS));
+
+		assert.deepEqual(m.validatePosition(new Position(0, 0)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(0, 1)), new Position(1, 1));
+
+		assert.deepEqual(m.validatePosition(new Position(1, 1)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(1, 2)), new Position(1, 2));
+		assert.deepEqual(m.validatePosition(new Position(1, 30)), new Position(1, 9));
+
+		assert.deepEqual(m.validatePosition(new Position(2, 0)), new Position(2, 1));
+		assert.deepEqual(m.validatePosition(new Position(2, 1)), new Position(2, 1));
+		assert.deepEqual(m.validatePosition(new Position(2, 2)), new Position(2, 2));
+		assert.deepEqual(m.validatePosition(new Position(2, 30)), new Position(2, 9));
+
+		assert.deepEqual(m.validatePosition(new Position(3, 0)), new Position(2, 9));
+		assert.deepEqual(m.validatePosition(new Position(3, 1)), new Position(2, 9));
+		assert.deepEqual(m.validatePosition(new Position(3, 30)), new Position(2, 9));
+
+		assert.deepEqual(m.validatePosition(new Position(30, 30)), new Position(2, 9));
+
+		assert.deepEqual(m.validatePosition(new Position(-123.123, -0.5)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(Number.MIN_VALUE, Number.MIN_VALUE)), new Position(1, 1));
+
+		assert.deepEqual(m.validatePosition(new Position(Number.MAX_VALUE, Number.MAX_VALUE)), new Position(2, 9));
+		assert.deepEqual(m.validatePosition(new Position(123.23, 47.5)), new Position(2, 9));
+	});
+
+	test('validatePosition around high-low surrogate pairs 1', () => {
+
+		let m = new TextModel([], TextModel.toRawText('a📚b', TextModel.DEFAULT_CREATION_OPTIONS));
+
+		assert.deepEqual(m.validatePosition(new Position(0, 0)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(0, 1)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(0, 7)), new Position(1, 1));
+
+		assert.deepEqual(m.validatePosition(new Position(1, 1)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(1, 2)), new Position(1, 2));
+		assert.deepEqual(m.validatePosition(new Position(1, 3)), new Position(1, 2));
+		assert.deepEqual(m.validatePosition(new Position(1, 4)), new Position(1, 4));
+		assert.deepEqual(m.validatePosition(new Position(1, 5)), new Position(1, 5));
+		assert.deepEqual(m.validatePosition(new Position(1, 30)), new Position(1, 5));
+
+		assert.deepEqual(m.validatePosition(new Position(2, 0)), new Position(1, 5));
+		assert.deepEqual(m.validatePosition(new Position(2, 1)), new Position(1, 5));
+		assert.deepEqual(m.validatePosition(new Position(2, 2)), new Position(1, 5));
+		assert.deepEqual(m.validatePosition(new Position(2, 30)), new Position(1, 5));
+
+		assert.deepEqual(m.validatePosition(new Position(-123.123, -0.5)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(Number.MIN_VALUE, Number.MIN_VALUE)), new Position(1, 1));
+
+		assert.deepEqual(m.validatePosition(new Position(Number.MAX_VALUE, Number.MAX_VALUE)), new Position(1, 5));
+		assert.deepEqual(m.validatePosition(new Position(123.23, 47.5)), new Position(1, 5));
+	});
+
+	test('validatePosition around high-low surrogate pairs 2', () => {
+
+		let m = new TextModel([], TextModel.toRawText('a📚📚b', TextModel.DEFAULT_CREATION_OPTIONS));
+
+		assert.deepEqual(m.validatePosition(new Position(1, 1)), new Position(1, 1));
+		assert.deepEqual(m.validatePosition(new Position(1, 2)), new Position(1, 2));
+		assert.deepEqual(m.validatePosition(new Position(1, 3)), new Position(1, 2));
+		assert.deepEqual(m.validatePosition(new Position(1, 4)), new Position(1, 4));
+		assert.deepEqual(m.validatePosition(new Position(1, 5)), new Position(1, 4));
+		assert.deepEqual(m.validatePosition(new Position(1, 6)), new Position(1, 6));
+		assert.deepEqual(m.validatePosition(new Position(1, 7)), new Position(1, 7));
+
+	});
+
+	test('validateRange around high-low surrogate pairs 1', () => {
+
+		let m = new TextModel([], TextModel.toRawText('a📚b', TextModel.DEFAULT_CREATION_OPTIONS));
+
+		assert.deepEqual(m.validateRange(new Range(0, 0, 0, 1)), new Range(1, 1, 1, 1));
+		assert.deepEqual(m.validateRange(new Range(0, 0, 0, 7)), new Range(1, 1, 1, 1));
+
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 1)), new Range(1, 1, 1, 1));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 2)), new Range(1, 1, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 3)), new Range(1, 1, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 4)), new Range(1, 1, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 5)), new Range(1, 1, 1, 5));
+
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 2)), new Range(1, 2, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 3)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 4)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 5)), new Range(1, 2, 1, 5));
+
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 3)), new Range(1, 2, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 4)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 5)), new Range(1, 2, 1, 5));
+
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 4)), new Range(1, 4, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 5)), new Range(1, 4, 1, 5));
+
+		assert.deepEqual(m.validateRange(new Range(1, 5, 1, 5)), new Range(1, 5, 1, 5));
+	});
+
+	test('validateRange around high-low surrogate pairs 2', () => {
+
+		let m = new TextModel([], TextModel.toRawText('a📚📚b', TextModel.DEFAULT_CREATION_OPTIONS));
+
+		assert.deepEqual(m.validateRange(new Range(0, 0, 0, 1)), new Range(1, 1, 1, 1));
+		assert.deepEqual(m.validateRange(new Range(0, 0, 0, 7)), new Range(1, 1, 1, 1));
+
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 1)), new Range(1, 1, 1, 1));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 2)), new Range(1, 1, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 3)), new Range(1, 1, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 4)), new Range(1, 1, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 5)), new Range(1, 1, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 6)), new Range(1, 1, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 1, 1, 7)), new Range(1, 1, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 2)), new Range(1, 2, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 3)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 4)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 5)), new Range(1, 2, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 6)), new Range(1, 2, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 2, 1, 7)), new Range(1, 2, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 3)), new Range(1, 2, 1, 2));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 4)), new Range(1, 2, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 5)), new Range(1, 2, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 6)), new Range(1, 2, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 3, 1, 7)), new Range(1, 2, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 4)), new Range(1, 4, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 5)), new Range(1, 4, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 6)), new Range(1, 4, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 4, 1, 7)), new Range(1, 4, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 5, 1, 5)), new Range(1, 4, 1, 4));
+		assert.deepEqual(m.validateRange(new Range(1, 5, 1, 6)), new Range(1, 4, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 5, 1, 7)), new Range(1, 4, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 6, 1, 6)), new Range(1, 6, 1, 6));
+		assert.deepEqual(m.validateRange(new Range(1, 6, 1, 7)), new Range(1, 6, 1, 7));
+
+		assert.deepEqual(m.validateRange(new Range(1, 7, 1, 7)), new Range(1, 7, 1, 7));
 	});
 
 	test('modifyPosition', () => {
 
-		var m = new TextModel([], TextModel.toRawText('line one\nline two', DefaultEndOfLine.LF));
-		assert.deepEqual(m.modifyPosition(new Position(1,1), 0), new Position(1, 1));
-		assert.deepEqual(m.modifyPosition(new Position(0,0), 0), new Position(1, 1));
-		assert.deepEqual(m.modifyPosition(new Position(30, 1), 0), new Position(2, 1));
+		var m = new TextModel([], TextModel.toRawText('line one\nline two', TextModel.DEFAULT_CREATION_OPTIONS));
+		assert.deepEqual(m.modifyPosition(new Position(1, 1), 0), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(0, 0), 0), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(30, 1), 0), new Position(2, 9));
 
-		assert.deepEqual(m.modifyPosition(new Position(1,1), 17), new Position(2, 9));
-		assert.deepEqual(m.modifyPosition(new Position(1,1), 1), new Position(1, 2));
-		assert.deepEqual(m.modifyPosition(new Position(1,1), 3), new Position(1, 4));
+		assert.deepEqual(m.modifyPosition(new Position(1, 1), 17), new Position(2, 9));
+		assert.deepEqual(m.modifyPosition(new Position(1, 1), 1), new Position(1, 2));
+		assert.deepEqual(m.modifyPosition(new Position(1, 1), 3), new Position(1, 4));
 		assert.deepEqual(m.modifyPosition(new Position(1, 2), 10), new Position(2, 3));
 		assert.deepEqual(m.modifyPosition(new Position(1, 5), 13), new Position(2, 9));
 		assert.deepEqual(m.modifyPosition(new Position(1, 2), 16), new Position(2, 9));
 
 		assert.deepEqual(m.modifyPosition(new Position(2, 9), -17), new Position(1, 1));
-		assert.deepEqual(m.modifyPosition(new Position(1,2), -1), new Position(1, 1));
-		assert.deepEqual(m.modifyPosition(new Position(1,4), -3), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(1, 2), -1), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(1, 4), -3), new Position(1, 1));
 		assert.deepEqual(m.modifyPosition(new Position(2, 3), -10), new Position(1, 2));
 		assert.deepEqual(m.modifyPosition(new Position(2, 9), -13), new Position(1, 5));
 		assert.deepEqual(m.modifyPosition(new Position(2, 9), -16), new Position(1, 2));
 
-		assert.throws(() => m.modifyPosition(new Position(1, 2), 17));
-		assert.throws(() => m.modifyPosition(new Position(1, 2), 100));
+		assert.deepEqual(m.modifyPosition(new Position(1, 2), 17), new Position(2, 9));
+		assert.deepEqual(m.modifyPosition(new Position(1, 2), 100), new Position(2, 9));
 
-		assert.throws(() => m.modifyPosition(new Position(1, 2), -2));
-		assert.throws(() => m.modifyPosition(new Position(1, 2), -100));
-		assert.throws(() => m.modifyPosition(new Position(2, 2), -100));
-		assert.throws(() => m.modifyPosition(new Position(2, 9), -18));
+		assert.deepEqual(m.modifyPosition(new Position(1, 2), -2), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(1, 2), -100), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(2, 2), -100), new Position(1, 1));
+		assert.deepEqual(m.modifyPosition(new Position(2, 9), -18), new Position(1, 1));
+	});
+
+	test('normalizeIndentation 1', () => {
+		let model = new TextModel([], {
+			length: 0,
+			lines: [],
+			BOM: '',
+			EOL: '\n',
+			containsRTL: false,
+			options: {
+				tabSize: 4,
+				insertSpaces: false,
+				trimAutoWhitespace: true,
+				defaultEOL: DefaultEndOfLine.LF
+			}
+		});
+
+		assert.equal(model.normalizeIndentation('\t'), '\t');
+		assert.equal(model.normalizeIndentation('    '), '\t');
+		assert.equal(model.normalizeIndentation('   '), '   ');
+		assert.equal(model.normalizeIndentation('  '), '  ');
+		assert.equal(model.normalizeIndentation(' '), ' ');
+		assert.equal(model.normalizeIndentation(''), '');
+		assert.equal(model.normalizeIndentation(' \t   '), '\t\t');
+		assert.equal(model.normalizeIndentation(' \t  '), '\t   ');
+		assert.equal(model.normalizeIndentation(' \t '), '\t  ');
+		assert.equal(model.normalizeIndentation(' \t'), '\t ');
+
+		assert.equal(model.normalizeIndentation('\ta'), '\ta');
+		assert.equal(model.normalizeIndentation('    a'), '\ta');
+		assert.equal(model.normalizeIndentation('   a'), '   a');
+		assert.equal(model.normalizeIndentation('  a'), '  a');
+		assert.equal(model.normalizeIndentation(' a'), ' a');
+		assert.equal(model.normalizeIndentation('a'), 'a');
+		assert.equal(model.normalizeIndentation(' \t   a'), '\t\ta');
+		assert.equal(model.normalizeIndentation(' \t  a'), '\t   a');
+		assert.equal(model.normalizeIndentation(' \t a'), '\t  a');
+		assert.equal(model.normalizeIndentation(' \ta'), '\t a');
+
+		model.dispose();
+	});
+
+	test('normalizeIndentation 2', () => {
+		let model = new TextModel([], {
+			length: 0,
+			lines: [],
+			BOM: '',
+			EOL: '\n',
+			containsRTL: false,
+			options: {
+				tabSize: 4,
+				insertSpaces: true,
+				trimAutoWhitespace: true,
+				defaultEOL: DefaultEndOfLine.LF
+			}
+		});
+
+		assert.equal(model.normalizeIndentation('\ta'), '    a');
+		assert.equal(model.normalizeIndentation('    a'), '    a');
+		assert.equal(model.normalizeIndentation('   a'), '   a');
+		assert.equal(model.normalizeIndentation('  a'), '  a');
+		assert.equal(model.normalizeIndentation(' a'), ' a');
+		assert.equal(model.normalizeIndentation('a'), 'a');
+		assert.equal(model.normalizeIndentation(' \t   a'), '        a');
+		assert.equal(model.normalizeIndentation(' \t  a'), '       a');
+		assert.equal(model.normalizeIndentation(' \t a'), '      a');
+		assert.equal(model.normalizeIndentation(' \ta'), '     a');
+
+		model.dispose();
+	});
+});
+
+suite('TextModel.mightContainRTL', () => {
+
+	test('nope', () => {
+		let model = new TextModel([], TextModel.toRawText('hello world!', TextModel.DEFAULT_CREATION_OPTIONS));
+		assert.equal(model.mightContainRTL(), false);
+	});
+
+	test('yes', () => {
+		let model = new TextModel([], TextModel.toRawText('Hello,\nזוהי עובדה מבוססת שדעתו', TextModel.DEFAULT_CREATION_OPTIONS));
+		assert.equal(model.mightContainRTL(), true);
+	});
+
+	test('setValue resets 1', () => {
+		let model = new TextModel([], TextModel.toRawText('hello world!', TextModel.DEFAULT_CREATION_OPTIONS));
+		assert.equal(model.mightContainRTL(), false);
+		model.setValue('Hello,\nזוהי עובדה מבוססת שדעתו');
+		assert.equal(model.mightContainRTL(), true);
+	});
+
+	test('setValue resets 2', () => {
+		let model = new TextModel([], TextModel.toRawText('Hello,\nهناك حقيقة مثبتة منذ زمن طويل', TextModel.DEFAULT_CREATION_OPTIONS));
+		assert.equal(model.mightContainRTL(), true);
+		model.setValue('hello world!');
+		assert.equal(model.mightContainRTL(), false);
+	});
+
+});
+
+suite('TextModel.getLineIndentGuide', () => {
+	function assertIndentGuides(lines: [number, string][]): void {
+		let text = lines.map(l => l[1]).join('\n');
+		let model = new TextModel([], TextModel.toRawText(text, TextModel.DEFAULT_CREATION_OPTIONS));
+
+		let actual: [number, string][] = [];
+		for (let line = 1; line <= model.getLineCount(); line++) {
+			actual[line - 1] = [model.getLineIndentGuide(line), model.getLineContent(line)];
+		}
+
+		// let expected = lines.map(l => l[0]);
+
+		assert.deepEqual(actual, lines);
+
+		model.dispose();
+	}
+
+	test('getLineIndentGuide one level', () => {
+		assertIndentGuides([
+			[0, 'A'],
+			[1, '  A'],
+			[1, '  A'],
+			[1, '  A'],
+		]);
+	});
+
+	test('getLineIndentGuide two levels', () => {
+		assertIndentGuides([
+			[0, 'A'],
+			[1, '  A'],
+			[1, '  A'],
+			[1, '    A'],
+			[1, '    A'],
+		]);
+	});
+
+	test('getLineIndentGuide three levels', () => {
+		assertIndentGuides([
+			[0, 'A'],
+			[1, '  A'],
+			[1, '    A'],
+			[2, '      A'],
+			[0, 'A'],
+		]);
+	});
+
+	test('getLineIndentGuide decreasing indent', () => {
+		assertIndentGuides([
+			[0, '    A'],
+			[0, '  A'],
+			[0, 'A'],
+		]);
+	});
+
+	test('getLineIndentGuide Java', () => {
+		assertIndentGuides([
+			/* 1*/[0, 'class A {'],
+			/* 2*/[1, '  void foo() {'],
+			/* 3*/[1, '    console.log(1);'],
+			/* 4*/[1, '    console.log(2);'],
+			/* 5*/[1, '  }'],
+			/* 6*/[1, ''],
+			/* 7*/[1, '  void bar() {'],
+			/* 8*/[1, '    console.log(3);'],
+			/* 9*/[1, '  }'],
+			/*10*/[0, '}'],
+			/*11*/[0, 'interface B {'],
+			/*12*/[1, '  void bar();'],
+			/*13*/[0, '}'],
+		]);
+	});
+
+	test('getLineIndentGuide Javadoc', () => {
+		assertIndentGuides([
+			[0, '/**'],
+			[1, ' * Comment'],
+			[1, ' */'],
+			[0, 'class A {'],
+			[1, '  void foo() {'],
+			[1, '  }'],
+			[0, '}'],
+		]);
+	});
+
+	test('getLineIndentGuide Whitespace', () => {
+		assertIndentGuides([
+			[0, 'class A {'],
+			[1, ''],
+			[1, '  void foo() {'],
+			[1, '     '],
+			[1, '     return 1;'],
+			[1, '  }'],
+			[1, '      '],
+			[0, '}'],
+		]);
+	});
+
+	test('getLineIndentGuide Tabs', () => {
+		assertIndentGuides([
+			[0, 'class A {'],
+			[1, '\t\t'],
+			[1, '\tvoid foo() {'],
+			[2, '\t \t//hello'],
+			[2, '\t    return 2;'],
+			[1, '  \t}'],
+			[1, '      '],
+			[0, '}'],
+		]);
+	});
+
+	test('getLineIndentGuide checker.ts', () => {
+		assertIndentGuides([
+			/* 1*/[0, '/// <reference path="binder.ts"/>'],
+			/* 2*/[0, ''],
+			/* 3*/[0, '/* @internal */'],
+			/* 4*/[0, 'namespace ts {'],
+			/* 5*/[1, '    let nextSymbolId = 1;'],
+			/* 6*/[1, '    let nextNodeId = 1;'],
+			/* 7*/[1, '    let nextMergeId = 1;'],
+			/* 8*/[1, '    let nextFlowId = 1;'],
+			/* 9*/[1, ''],
+			/*10*/[1, '    export function getNodeId(node: Node): number {'],
+			/*11*/[2, '        if (!node.id) {'],
+			/*12*/[3, '            node.id = nextNodeId;'],
+			/*13*/[3, '            nextNodeId++;'],
+			/*14*/[2, '        }'],
+			/*15*/[2, '        return node.id;'],
+			/*16*/[1, '    }'],
+			/*17*/[0, '}'],
+		]);
+	});
+
+	test('issue #8425 - Missing indentation lines for first level indentation', () => {
+		assertIndentGuides([
+			[1, '\tindent1'],
+			[2, '\t\tindent2'],
+			[2, '\t\tindent2'],
+			[1, '\tindent1'],
+		]);
+	});
+
+	test('issue #8952 - Indentation guide lines going through text on .yml file', () => {
+		assertIndentGuides([
+			[0, 'properties:'],
+			[1, '    emailAddress:'],
+			[2, '        - bla'],
+			[2, '        - length:'],
+			[3, '            max: 255'],
+			[0, 'getters:'],
+		]);
+	});
+
+	test('issue #11892 - Indent guides look funny', () => {
+		assertIndentGuides([
+			[0, 'function test(base) {'],
+			[1, '\tswitch (base) {'],
+			[2, '\t\tcase 1:'],
+			[3, '\t\t\treturn 1;'],
+			[2, '\t\tcase 2:'],
+			[3, '\t\t\treturn 2;'],
+			[1, '\t}'],
+			[0, '}'],
+		]);
+	});
+
+	test('issue #12398 - Problem in indent guidelines', () => {
+		assertIndentGuides([
+			[2, '\t\t.bla'],
+			[3, '\t\t\tlabel(for)'],
+			[0, 'include script'],
+		]);
 	});
 });

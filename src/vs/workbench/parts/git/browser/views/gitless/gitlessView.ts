@@ -13,23 +13,18 @@ import ee = require('vs/base/common/eventEmitter');
 import view = require('vs/workbench/parts/git/browser/views/view');
 import builder = require('vs/base/browser/builder');
 import actions = require('vs/base/common/actions');
-import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
-import {ISelection, Selection} from 'vs/platform/selection/common/selection';
+import product from 'vs/platform/product';
 
 var $ = builder.$;
 
 export class GitlessView
 	extends ee.EventEmitter
-	implements view.IView
-{
+	implements view.IView {
 	public ID = 'gitless';
 	private _element: HTMLElement;
-	private _contextService: IWorkspaceContextService;
 
-	constructor(@IWorkspaceContextService contextService: IWorkspaceContextService) {
+	constructor() {
 		super();
-
-		this._contextService = contextService;
 	}
 
 	public get element(): HTMLElement {
@@ -73,7 +68,7 @@ export class GitlessView
 			'<div class="gitless-view">',
 			'<p>', nls.localize('looksLike', "It looks like git is not installed on your system."), '</p>',
 			'<p>', instructions, '</p>',
-			'<p>', nls.localize('pleaseRestart', "Once git is installed, please restart {0}.", this._contextService.getConfiguration().env.appName), '</p>',
+			'<p>', nls.localize('pleaseRestart', "Once git is installed, please restart {0}.", product.nameLong), '</p>',
 			'</div>'
 		].join('')).getHTMLElement();
 	}
@@ -86,12 +81,8 @@ export class GitlessView
 		return;
 	}
 
-	public setVisible(visible:boolean): winjs.TPromise<void> {
+	public setVisible(visible: boolean): winjs.TPromise<void> {
 		return winjs.TPromise.as(null);
-	}
-
-	public getSelection(): ISelection {
-		return Selection.EMPTY;
 	}
 
 	public getControl(): ee.IEventEmitter {

@@ -8,18 +8,33 @@ else
 	ROOT=$(dirname $(dirname $(readlink -f $0)))
 fi
 
-# Unit Tests
+cd $ROOT
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
-	cd $ROOT ; ulimit -n 4096 ; ATOM_SHELL_INTERNAL_RUN_AS_NODE=1 \
-		./.build/electron/Electron.app/Contents/MacOS/Electron \
-		node_modules/mocha/bin/_mocha $*
+	NAME=`node -p "require('./product.json').nameLong"`
+	CODE="./.build/electron/$NAME.app/Contents/MacOS/Electron"
 else
-	cd $ROOT ; ATOM_SHELL_INTERNAL_RUN_AS_NODE=1 \
-		./.build/electron/electron \
-		node_modules/mocha/bin/_mocha $*
+	NAME=`node -p "require('./product.json').applicationName"`
+	CODE=".build/electron/$NAME"
 fi
 
-# Integration Tests
-if [[ "$SKIP_INTEGRATION_TESTS" == "" ]]; then
-	./scripts/code.sh $ROOT/extensions/vscode-api-tests/testWorkspace --extensionDevelopmentPath=$ROOT/extensions/vscode-api-tests --extensionTestsPath=$ROOT/extensions/vscode-api-tests/out
+# Node modules
+test -d node_modules || ./scripts/npm.sh install
+
+# Get electron
+test -f "$CODE" || ./node_modules/.bin/gulp electron
+
+# Build
+test -d out || ./node_modules/.bin/gulp compile
+
+# Unit Tests
+export VSCODE_DEV=1
+if [[ "$OSTYPE" == "darwin"* ]]; then
+	cd $ROOT ; ulimit -n 4096 ; ELECTRON_RUN_AS_NODE=1 \
+		"$CODE" \
+		node_modules/mocha/bin/_mocha "$@"
+else
+	cd $ROOT ; ELECTRON_RUN_AS_NODE=1 \
+		"$CODE" \
+		node_modules/mocha/bin/_mocha "$@"
 fi

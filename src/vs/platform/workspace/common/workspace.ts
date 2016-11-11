@@ -5,28 +5,19 @@
 'use strict';
 
 import URI from 'vs/base/common/uri';
-import {createDecorator, ServiceIdentifier} from 'vs/platform/instantiation/common/instantiation';
+import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
+import paths = require('vs/base/common/paths');
 
 export const IWorkspaceContextService = createDecorator<IWorkspaceContextService>('contextService');
 
 export interface IWorkspaceContextService {
-	serviceId: ServiceIdentifier<any>;
+	_serviceBrand: any;
 
 	/**
 	 * Provides access to the workspace object the platform is running with. This may be null if the workbench was opened
 	 * without workspace (empty);
 	 */
 	getWorkspace(): IWorkspace;
-
-	/**
-	 * Provides access to the configuration object the platform is running with.
-	 */
-	getConfiguration(): IConfiguration;
-
-	/**
-	 * Provides access to the options object the platform is running with.
-	 */
-	getOptions(): any;
 
 	/**
 	 * Returns iff the provided resource is inside the workspace or not.
@@ -55,93 +46,53 @@ export interface IWorkspace {
 	resource: URI;
 
 	/**
-	 * the identifier that uniquely identifies this workspace among others.
-	 */
-	id: string;
-
-	/**
-	 * the name of the workspace
-	 */
-	name: string;
-
-	/**
-	 * the last modified date of the workspace if known
-	 */
-	mtime?: number;
-
-	/**
 	 * the unique identifier of the workspace. if the workspace is deleted and recreated
 	 * the identifier also changes. this makes the uid more unique compared to the id which
 	 * is just derived from the workspace name.
 	 */
 	uid?: number;
-}
 
-export interface IConfiguration {
 	/**
-	 * Some environmental flags
+	 * the name of the workspace
 	 */
-	env?: IEnvironment;
+	name?: string;
 }
 
-export interface IEnvironment {
-	language: string;
+export class WorkspaceContextService implements IWorkspaceContextService {
 
-	appName: string;
-	appRoot: string;
-	isBuilt: boolean;
-	execPath: string;
+	public _serviceBrand: any;
 
-	applicationName: string;
-	darwinBundleIdentifier: string;
+	private workspace: IWorkspace;
 
-	version: string;
-	commitHash: string;
+	constructor(workspace: IWorkspace) {
+		this.workspace = workspace;
+	}
 
-	updateFeedUrl: string;
-	updateChannel: string;
+	public getWorkspace(): IWorkspace {
+		return this.workspace;
+	}
 
-	extensionsGallery: {
-		serviceUrl: string;
-		cacheUrl: string;
-		itemUrl: string;
-	};
+	public isInsideWorkspace(resource: URI): boolean {
+		if (resource && this.workspace) {
+			return paths.isEqualOrParent(resource.fsPath, this.workspace.resource.fsPath);
+		}
 
-	releaseNotesUrl: string;
-	productDownloadUrl: string;
+		return false;
+	}
 
-	welcomePage: string;
+	public toWorkspaceRelativePath(resource: URI): string {
+		if (this.isInsideWorkspace(resource)) {
+			return paths.normalize(paths.relative(this.workspace.resource.fsPath, resource.fsPath));
+		}
 
-	crashReporter: any;
+		return null;
+	}
 
-	appSettingsHome: string;
-	appSettingsPath: string;
-	appKeybindingsPath: string;
+	public toResource(workspaceRelativePath: string): URI {
+		if (typeof workspaceRelativePath === 'string' && this.workspace) {
+			return URI.file(paths.join(this.workspace.resource.fsPath, workspaceRelativePath));
+		}
 
-	debugPluginHostPort: number;
-	debugBrkPluginHost: boolean;
-	disablePlugins: boolean;
-
-	logPluginHostCommunication: boolean;
-	verboseLogging: boolean;
-	enablePerformance: boolean;
-
-	userPluginsHome: string;
-	sharedIPCHandle: string;
-	pluginDevelopmentPath: string;
-	pluginTestsPath: string;
-
-	recentPaths: string[];
-
-	enableTelemetry: boolean;
-
-	aiConfig: {
-		key: string;
-		asimovKey: string;
-	};
-
-	sendASmile: {
-		reportIssueUrl: string,
-		requestFeatureUrl: string
-	};
+		return null;
+	}
 }

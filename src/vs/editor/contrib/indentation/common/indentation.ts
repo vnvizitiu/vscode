@@ -4,89 +4,204 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as nls from 'vs/nls';
-import {TPromise} from 'vs/base/common/winjs.base';
-import {IConfigurationService} from 'vs/platform/configuration/common/configuration';
-import {EditorAction} from 'vs/editor/common/editorAction';
-import {ICommonCodeEditor, IEditorActionDescriptorData} from 'vs/editor/common/editorCommon';
-import {CommonEditorRegistry, EditorActionDescriptor} from 'vs/editor/common/editorCommonExtensions';
-import {IndentationToSpacesCommand, IndentationToTabsCommand} from 'vs/editor/contrib/indentation/common/indentationCommands';
-import {IQuickOpenService} from 'vs/workbench/services/quickopen/common/quickOpenService';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { ICommonCodeEditor, EditorContextKeys } from 'vs/editor/common/editorCommon';
+import { editorAction, ServicesAccessor, IActionOptions, EditorAction } from 'vs/editor/common/editorCommonExtensions';
+import { IndentationToSpacesCommand, IndentationToTabsCommand } from 'vs/editor/contrib/indentation/common/indentationCommands';
+import { IQuickOpenService } from 'vs/workbench/services/quickopen/common/quickOpenService';
+import { IModelService } from 'vs/editor/common/services/modelService';
 
+@editorAction
 export class IndentationToSpacesAction extends EditorAction {
-	static ID = 'editor.action.indentationToSpaces';
+	public static ID = 'editor.action.indentationToSpaces';
 
-	constructor(descriptor: IEditorActionDescriptorData, editor: ICommonCodeEditor) {
-		super(descriptor, editor);
+	constructor() {
+		super({
+			id: IndentationToSpacesAction.ID,
+			label: nls.localize('indentationToSpaces', "Convert Indentation to Spaces"),
+			alias: 'Convert Indentation to Spaces',
+			precondition: EditorContextKeys.Writable
+		});
 	}
 
-	public run(): TPromise<boolean> {
-
-		const command = new IndentationToSpacesCommand(this.editor.getSelection(), this.editor.getIndentationOptions().tabSize);
-		this.editor.executeCommands(this.id, [command]);
-		this.editor.updateOptions({
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): void {
+		let model = editor.getModel();
+		if (!model) {
+			return;
+		}
+		let modelOpts = model.getOptions();
+		const command = new IndentationToSpacesCommand(editor.getSelection(), modelOpts.tabSize);
+		editor.executeCommands(this.id, [command]);
+		model.updateOptions({
 			insertSpaces: true
 		});
-
-		return TPromise.as(true);
 	}
 }
 
+@editorAction
 export class IndentationToTabsAction extends EditorAction {
-	static ID = 'editor.action.indentationToTabs';
+	public static ID = 'editor.action.indentationToTabs';
 
-	constructor(descriptor: IEditorActionDescriptorData, editor: ICommonCodeEditor) {
-		super(descriptor, editor);
+	constructor() {
+		super({
+			id: IndentationToTabsAction.ID,
+			label: nls.localize('indentationToTabs', "Convert Indentation to Tabs"),
+			alias: 'Convert Indentation to Tabs',
+			precondition: EditorContextKeys.Writable
+		});
 	}
 
-	public run(): TPromise<boolean> {
-
-		const command = new IndentationToTabsCommand(this.editor.getSelection(), this.editor.getIndentationOptions().tabSize);
-		this.editor.executeCommands(this.id, [command]);
-		this.editor.updateOptions({
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): void {
+		let model = editor.getModel();
+		if (!model) {
+			return;
+		}
+		let modelOpts = model.getOptions();
+		const command = new IndentationToTabsCommand(editor.getSelection(), modelOpts.tabSize);
+		editor.executeCommands(this.id, [command]);
+		model.updateOptions({
 			insertSpaces: false
 		});
-
-		return TPromise.as(true);
 	}
 }
 
 export class ChangeIndentationSizeAction extends EditorAction {
 
-	static ID = 'editor.action.changeIndentationSize';
-
-	constructor(descriptor: IEditorActionDescriptorData, editor: ICommonCodeEditor,
-		@IQuickOpenService private quickOpenService: IQuickOpenService,
-		@IConfigurationService private configurationService: IConfigurationService
-	) {
-		super(descriptor, editor);
+	constructor(private insertSpaces: boolean, opts: IActionOptions) {
+		super(opts);
 	}
 
-	public run(): TPromise<boolean> {
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): TPromise<void> {
+		const quickOpenService = accessor.get(IQuickOpenService);
+		const modelService = accessor.get(IModelService);
 
-		return this.configurationService.loadConfiguration('editor').then(config => {
-			const picks = [1, 2, 3, 4, 5, 6, 7, 8].map(n => ({
-				id: n.toString(),
-				label: n.toString(),
-				description: n === config.tabSize ? nls.localize('configuredTabSize', "Configured Tab Size") : null
-			}));
-			const autoFocusIndex = Math.min(this.editor.getIndentationOptions().tabSize - 1, 7);
+		let model = editor.getModel();
+		if (!model) {
+			return;
+		}
 
-			return TPromise.timeout(50 /* quick open is sensitive to being opened so soon after another */).then(() =>
-				this.quickOpenService.pick(picks, { placeHolder: nls.localize('selectTabWidth', "Select Tab Size for Current File"), autoFocus: { autoFocusIndex } }).then(pick => {
-					if (pick) {
-						this.editor.updateOptions({
-							tabSize: parseInt(pick.label)
-						});
-					}
+		let creationOpts = modelService.getCreationOptions();
+		const picks = [1, 2, 3, 4, 5, 6, 7, 8].map(n => ({
+			id: n.toString(),
+			label: n.toString(),
+			// add description for tabSize value set in the configuration
+			description: n === creationOpts.tabSize ? nls.localize('configuredTabSize', "Configured Tab Size") : null
+		}));
 
-					return true;
-				})
-			);
+		// auto focus the tabSize set for the current editor
+		const autoFocusIndex = Math.min(model.getOptions().tabSize - 1, 7);
+
+		return TPromise.timeout(50 /* quick open is sensitive to being opened so soon after another */).then(() =>
+			quickOpenService.pick(picks, { placeHolder: nls.localize({ key: 'selectTabWidth', comment: ['Tab corresponds to the tab key'] }, "Select Tab Size for Current File"), autoFocus: { autoFocusIndex } }).then(pick => {
+				if (pick) {
+					model.updateOptions({
+						tabSize: parseInt(pick.label, 10),
+						insertSpaces: this.insertSpaces
+					});
+				}
+			})
+		);
+	}
+}
+
+@editorAction
+export class IndentUsingTabs extends ChangeIndentationSizeAction {
+
+	public static ID = 'editor.action.indentUsingTabs';
+
+	constructor() {
+		super(false, {
+			id: IndentUsingTabs.ID,
+			label: nls.localize('indentUsingTabs', "Indent Using Tabs"),
+			alias: 'Indent Using Tabs',
+			precondition: null
 		});
 	}
 }
 
-// register actions
-CommonEditorRegistry.registerEditorAction(new EditorActionDescriptor(IndentationToSpacesAction, IndentationToSpacesAction.ID, nls.localize('indentationToSpaces', "Convert Indentation to Spaces")));
-CommonEditorRegistry.registerEditorAction(new EditorActionDescriptor(IndentationToTabsAction, IndentationToTabsAction.ID, nls.localize('indentationToTabs', "Convert Indentation to Tabs")));
-CommonEditorRegistry.registerEditorAction(new EditorActionDescriptor(ChangeIndentationSizeAction, ChangeIndentationSizeAction.ID, nls.localize('changeIndentationSize', "Change Tab Size for Current File")));
+@editorAction
+export class IndentUsingSpaces extends ChangeIndentationSizeAction {
+
+	public static ID = 'editor.action.indentUsingSpaces';
+
+	constructor() {
+		super(true, {
+			id: IndentUsingSpaces.ID,
+			label: nls.localize('indentUsingSpaces', "Indent Using Spaces"),
+			alias: 'Indent Using Spaces',
+			precondition: null
+		});
+	}
+}
+
+@editorAction
+export class DetectIndentation extends EditorAction {
+
+	public static ID = 'editor.action.detectIndentation';
+
+	constructor() {
+		super({
+			id: DetectIndentation.ID,
+			label: nls.localize('detectIndentation', "Detect Indentation from Content"),
+			alias: 'Detect Indentation from Content',
+			precondition: null
+		});
+	}
+
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): void {
+		const modelService = accessor.get(IModelService);
+
+		let model = editor.getModel();
+		if (!model) {
+			return;
+		}
+
+		let creationOpts = modelService.getCreationOptions();
+		model.detectIndentation(creationOpts.insertSpaces, creationOpts.tabSize);
+	}
+}
+
+@editorAction
+export class ToggleRenderWhitespaceAction extends EditorAction {
+
+	constructor() {
+		super({
+			id: 'editor.action.toggleRenderWhitespace',
+			label: nls.localize('toggleRenderWhitespace', "Toggle Render Whitespace"),
+			alias: 'Toggle Render Whitespace',
+			precondition: null
+		});
+	}
+
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): void {
+		let renderWhitespace = editor.getConfiguration().viewInfo.renderWhitespace;
+		if (renderWhitespace === 'none') {
+			editor.updateOptions({
+				renderWhitespace: 'all'
+			});
+		} else {
+			editor.updateOptions({
+				renderWhitespace: 'none'
+			});
+		}
+	}
+}
+
+@editorAction
+export class ToggleRenderControlCharacterAction extends EditorAction {
+
+	constructor() {
+		super({
+			id: 'editor.action.toggleRenderControlCharacter',
+			label: nls.localize('toggleRenderControlCharacters', "Toggle Control Characters"),
+			alias: 'Toggle Render Control Characters',
+			precondition: null
+		});
+	}
+
+	public run(accessor: ServicesAccessor, editor: ICommonCodeEditor): void {
+		editor.updateOptions({
+			renderControlCharacters: !editor.getConfiguration().viewInfo.renderControlCharacters
+		});
+	}
+}

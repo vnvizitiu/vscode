@@ -6,10 +6,12 @@
 'use strict';
 
 import 'vs/css!./overlayWidgets';
-import {StyleMutator} from 'vs/base/browser/styleMutator';
-import {IEditorLayoutInfo} from 'vs/editor/common/editorCommon';
-import {ClassNames, IOverlayWidget, IRenderingContext, IViewContext, OverlayWidgetPositionPreference} from 'vs/editor/browser/editorBrowser';
-import {ViewPart} from 'vs/editor/browser/view/viewPart';
+import { StyleMutator } from 'vs/base/browser/styleMutator';
+import { EditorLayoutInfo } from 'vs/editor/common/editorCommon';
+import { ClassNames, IOverlayWidget, OverlayWidgetPositionPreference } from 'vs/editor/browser/editorBrowser';
+import { ViewPart } from 'vs/editor/browser/view/viewPart';
+import { ViewContext } from 'vs/editor/common/view/viewContext';
+import { IRenderingContext, IRestrictedRenderingContext } from 'vs/editor/common/view/renderingContext';
 
 interface IWidgetData {
 	widget: IOverlayWidget;
@@ -17,7 +19,7 @@ interface IWidgetData {
 }
 
 interface IWidgetMap {
-	[key:string]: IWidgetData;
+	[key: string]: IWidgetData;
 }
 
 export class ViewOverlayWidgets extends ViewPart {
@@ -26,16 +28,18 @@ export class ViewOverlayWidgets extends ViewPart {
 	public domNode: HTMLElement;
 
 	private _verticalScrollbarWidth: number;
-	private _horizontalScrollbarHeight:number;
-	private _editorHeight:number;
+	private _horizontalScrollbarHeight: number;
+	private _editorHeight: number;
+	private _editorWidth: number;
 
-	constructor(context:IViewContext) {
+	constructor(context: ViewContext) {
 		super(context);
 
 		this._widgets = {};
 		this._verticalScrollbarWidth = 0;
 		this._horizontalScrollbarHeight = 0;
 		this._editorHeight = 0;
+		this._editorWidth = 0;
 
 		this.domNode = document.createElement('div');
 		this.domNode.className = ClassNames.OVERLAY_WIDGETS;
@@ -48,14 +52,11 @@ export class ViewOverlayWidgets extends ViewPart {
 
 	// ---- begin view event handlers
 
-	public onLayoutChanged(layoutInfo:IEditorLayoutInfo): boolean {
+	public onLayoutChanged(layoutInfo: EditorLayoutInfo): boolean {
 		this._verticalScrollbarWidth = layoutInfo.verticalScrollbarWidth;
 		this._horizontalScrollbarHeight = layoutInfo.horizontalScrollbarHeight;
 		this._editorHeight = layoutInfo.height;
-
-		this._requestModificationFrame(() => {
-			StyleMutator.setWidth(this.domNode, layoutInfo.width);
-		});
+		this._editorWidth = layoutInfo.width;
 		return true;
 	}
 
@@ -68,41 +69,45 @@ export class ViewOverlayWidgets extends ViewPart {
 		};
 
 		// This is sync because a widget wants to be in the dom
-		var domNode = widget.getDomNode();
+		let domNode = widget.getDomNode();
 		domNode.style.position = 'absolute';
 		domNode.setAttribute('widgetId', widget.getId());
 		this.domNode.appendChild(domNode);
+
+		this.setShouldRender();
 	}
 
-	public setWidgetPosition(widget: IOverlayWidget, preference:OverlayWidgetPositionPreference): void {
-		var widgetData = this._widgets[widget.getId()];
-		widgetData.preference = preference;
+	public setWidgetPosition(widget: IOverlayWidget, preference: OverlayWidgetPositionPreference): boolean {
+		let widgetData = this._widgets[widget.getId()];
+		if (widgetData.preference === preference) {
+			return false;
+		}
 
-		this._requestModificationFrame(() => {
-			if(this._widgets.hasOwnProperty(widget.getId())) {
-				this._renderWidget(widgetData);
-			}
-		});
+		widgetData.preference = preference;
+		this.setShouldRender();
+
+		return true;
 	}
 
 	public removeWidget(widget: IOverlayWidget): void {
-		var widgetId = widget.getId();
+		let widgetId = widget.getId();
 		if (this._widgets.hasOwnProperty(widgetId)) {
-			var widgetData = this._widgets[widgetId];
-			var domNode = widgetData.widget.getDomNode();
+			let widgetData = this._widgets[widgetId];
+			let domNode = widgetData.widget.getDomNode();
 			delete this._widgets[widgetId];
 
 			domNode.parentNode.removeChild(domNode);
+			this.setShouldRender();
 		}
 	}
 
 	private _renderWidget(widgetData: IWidgetData): void {
-		var _RESTORE_STYLE_TOP = 'data-editor-restoreStyleTop',
-			domNode = widgetData.widget.getDomNode();
+		let _RESTORE_STYLE_TOP = 'data-editor-restoreStyleTop';
+		let domNode = widgetData.widget.getDomNode();
 
 		if (widgetData.preference === null) {
 			if (domNode.hasAttribute(_RESTORE_STYLE_TOP)) {
-				var previousTop = domNode.getAttribute(_RESTORE_STYLE_TOP);
+				let previousTop = domNode.getAttribute(_RESTORE_STYLE_TOP);
 				domNode.removeAttribute(_RESTORE_STYLE_TOP);
 				domNode.style.top = previousTop;
 			}
@@ -119,7 +124,7 @@ export class ViewOverlayWidgets extends ViewPart {
 			if (!domNode.hasAttribute(_RESTORE_STYLE_TOP)) {
 				domNode.setAttribute(_RESTORE_STYLE_TOP, domNode.style.top);
 			}
-			var widgetHeight = domNode.clientHeight;
+			let widgetHeight = domNode.clientHeight;
 			StyleMutator.setTop(domNode, (this._editorHeight - widgetHeight - 2 * this._horizontalScrollbarHeight));
 			StyleMutator.setRight(domNode, (2 * this._verticalScrollbarWidth));
 		} else if (widgetData.preference === OverlayWidgetPositionPreference.TOP_CENTER) {
@@ -131,26 +136,20 @@ export class ViewOverlayWidgets extends ViewPart {
 		}
 	}
 
-	_render(ctx:IRenderingContext): void {
-		var widgetId:string;
-
-		this._requestModificationFrame(() => {
-			for (widgetId in this._widgets) {
-				if (this._widgets.hasOwnProperty(widgetId)) {
-					this._renderWidget(this._widgets[widgetId]);
-				}
-			}
-		});
+	public prepareRender(ctx: IRenderingContext): void {
+		// Nothing to read
+		if (!this.shouldRender()) {
+			throw new Error('I did not ask to render!');
+		}
 	}
 
-	public onReadAfterForcedLayout(ctx:IRenderingContext): void {
-		// Overwriting to bypass `shouldRender` flag
-		this._render(ctx);
-		return null;
-	}
+	public render(ctx: IRestrictedRenderingContext): void {
+		StyleMutator.setWidth(this.domNode, this._editorWidth);
 
-	public onWriteAfterForcedLayout(): void {
-		// Overwriting to bypass `shouldRender` flag
-		this._executeModificationRunners();
+		let keys = Object.keys(this._widgets);
+		for (let i = 0, len = keys.length; i < len; i++) {
+			let widgetId = keys[i];
+			this._renderWidget(this._widgets[widgetId]);
+		}
 	}
 }

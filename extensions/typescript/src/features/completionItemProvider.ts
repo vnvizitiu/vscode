@@ -5,13 +5,12 @@
 
 'use strict';
 
-import { CompletionItem, TextDocument, Position, CompletionItemKind, CompletionItemProvider, CancellationToken } from 'vscode';
+import { CompletionItem, TextDocument, Position, CompletionItemKind, CompletionItemProvider, CancellationToken, WorkspaceConfiguration, TextEdit, Range } from 'vscode';
 
-import { IConfiguration, defaultConfiguration } from './configuration';
 import { ITypescriptServiceClient } from '../typescriptService';
 
 import * as PConst from '../protocol.const';
-import { CompletionEntry, CompletionsRequestArgs, CompletionsResponse, CompletionDetailsRequestArgs, CompletionDetailsResponse, CompletionEntryDetails } from '../protocol';
+import { CompletionEntry, CompletionsRequestArgs, CompletionDetailsRequestArgs, CompletionEntryDetails } from '../protocol';
 import * as Previewer from './previewer';
 
 class MyCompletionItem extends CompletionItem {
@@ -23,6 +22,10 @@ class MyCompletionItem extends CompletionItem {
 		super(entry.name);
 		this.sortText = entry.sortText;
 		this.kind = MyCompletionItem.convertKind(entry.kind);
+		if (entry.replacementSpan) {
+			let span = entry.replacementSpan;
+			this.textEdit = TextEdit.replace(new Range(span.start.line, span.start.offset, span.end.line, span.end.offset), entry.name);
+		}
 	}
 
 	private static convertKind(kind: string): CompletionItemKind {
@@ -59,6 +62,14 @@ class MyCompletionItem extends CompletionItem {
 	}
 }
 
+interface Configuration {
+	useCodeSnippetsOnMethodSuggest?: boolean;
+}
+
+namespace Configuration {
+	export const useCodeSnippetsOnMethodSuggest = 'useCodeSnippetsOnMethodSuggest';
+}
+
 export default class TypeScriptCompletionItemProvider implements CompletionItemProvider {
 
 	public triggerCharacters = ['.'];
@@ -66,15 +77,15 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 	public sortBy = [{ type: 'reference', partSeparator: '/' }];
 
 	private client: ITypescriptServiceClient;
-	private config: IConfiguration;
+	private config: Configuration;
 
 	constructor(client: ITypescriptServiceClient) {
 		this.client = client;
-		this.config = defaultConfiguration;
+		this.config = { useCodeSnippetsOnMethodSuggest: false };
 	}
 
-	public setConfiguration(config: IConfiguration): void {
-		this.config = config;
+	public updateConfiguration(config: WorkspaceConfiguration): void {
+		this.config.useCodeSnippetsOnMethodSuggest = config.get(Configuration.useCodeSnippetsOnMethodSuggest, false);
 	}
 
 	public provideCompletionItems(document: TextDocument, position: Position, token: CancellationToken): Promise<CompletionItem[]> {
@@ -118,8 +129,8 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 			}
 
 			return completionItems;
-
-		}, (err: CompletionsResponse) => {
+		}, (err) => {
+			this.client.error(`'completions' request failed with error.`, err);
 			return [];
 		});
 	}
@@ -161,7 +172,8 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 
 				return item;
 
-			}, (err: CompletionDetailsResponse) => {
+			}, (err) => {
+				this.client.error(`'completionEntryDetails' request failed with error.`, err);
 				return item;
 			});
 

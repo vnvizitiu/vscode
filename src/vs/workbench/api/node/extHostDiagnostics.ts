@@ -4,32 +4,37 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {Remotable, IThreadService} from 'vs/platform/thread/common/thread';
-import {IMarkerService, IResourceMarker, IMarkerData} from 'vs/platform/markers/common/markers';
+import { localize } from 'vs/nls';
+import { IThreadService } from 'vs/workbench/services/thread/common/threadService';
+import { IMarkerData } from 'vs/platform/markers/common/markers';
 import URI from 'vs/base/common/uri';
-import {TPromise} from 'vs/base/common/winjs.base';
+import { compare } from 'vs/base/common/strings';
 import Severity from 'vs/base/common/severity';
 import * as vscode from 'vscode';
+import { MainContext, MainThreadDiagnosticsShape, ExtHostDiagnosticsShape } from './extHost.protocol';
+import { DiagnosticSeverity } from './extHostTypes';
 
-class DiagnosticCollection implements vscode.DiagnosticCollection {
+export class DiagnosticCollection implements vscode.DiagnosticCollection {
 
 	private static _maxDiagnosticsPerFile: number = 250;
 
 	private _name: string;
-	private _proxy: MainThreadDiagnostics;
-	private _isDisposed: boolean;
+	private _proxy: MainThreadDiagnosticsShape;
 
-	constructor(name: string, proxy: MainThreadDiagnostics) {
+	private _isDisposed = false;
+	private _data: { [uri: string]: vscode.Diagnostic[] } = Object.create(null);
+
+	constructor(name: string, proxy: MainThreadDiagnosticsShape) {
 		this._name = name;
 		this._proxy = proxy;
 	}
 
 	dispose(): void {
 		if (!this._isDisposed) {
-			this._proxy._changeAll(this.name, undefined).then(() => {
-				this._proxy = undefined;
-				this._isDisposed = true;
-			});
+			this._proxy.$clear(this.name);
+			this._proxy = undefined;
+			this._data = undefined;
+			this._isDisposed = true;
 		}
 	}
 
@@ -41,71 +46,127 @@ class DiagnosticCollection implements vscode.DiagnosticCollection {
 	set(uri: vscode.Uri, diagnostics: vscode.Diagnostic[]): void;
 	set(entries: [vscode.Uri, vscode.Diagnostic[]][]): void;
 	set(first: vscode.Uri | [vscode.Uri, vscode.Diagnostic[]][], diagnostics?: vscode.Diagnostic[]) {
+
+		if (!first) {
+			// this set-call is a clear-call
+			this.clear();
+			return;
+		}
+
+		// the actual implementation for #set
+
 		this._checkDisposed();
+		let toSync: vscode.Uri[];
 
 		if (first instanceof URI) {
-			// change markers of resource only (max 500)
 
-			let data: IMarkerData[];
-			if (diagnostics) {
-				data = [];
-				let len = diagnostics.length;
-				if (len > DiagnosticCollection._maxDiagnosticsPerFile) {
-					console.warn('diagnostics for %s will be capped to %d (actually is %d)', first.toString(), DiagnosticCollection._maxDiagnosticsPerFile, len);
-					len = DiagnosticCollection._maxDiagnosticsPerFile;
-				}
-
-				for (let i = 0; i < len; i++) {
-					data.push(DiagnosticCollection._toMarkerData(diagnostics[i]));
-				}
+			if (!diagnostics) {
+				// remove this entry
+				this.delete(first);
+				return;
 			}
 
-			// set or reset for this resource
-			return this._proxy._changeOne(this.name, first, data);
+			// update single row
+			this._data[first.toString()] = diagnostics;
+			toSync = [first];
 
-		} else {
-			// change all marker of owner
-			let entries = <[vscode.Uri, vscode.Diagnostic[]][]>first;
-			let data: IResourceMarker[];
-			if (entries) {
-				let total = 0;
-				data = [];
-				for (let entry of entries) {
-					let [uri, diagnostics] = entry;
-					if (diagnostics) {
-						let len = diagnostics.length;
-						if (len > DiagnosticCollection._maxDiagnosticsPerFile) {
-							console.warn('diagnostics for %s will be capped to %d (actually is %d)', uri.toString(), DiagnosticCollection._maxDiagnosticsPerFile, len);
-							len = DiagnosticCollection._maxDiagnosticsPerFile;
-						}
+		} else if (Array.isArray(first)) {
+			// update many rows
+			toSync = [];
+			let lastUri: vscode.Uri;
+			for (const entry of first.slice(0).sort(DiagnosticCollection._compareTuplesByUri)) {
+				const [uri, diagnostics] = entry;
+				if (!lastUri || uri.toString() !== lastUri.toString()) {
+					if (lastUri && this._data[lastUri.toString()].length === 0) {
+						delete this._data[lastUri.toString()];
+					}
+					lastUri = uri;
+					toSync.push(uri);
+					this._data[uri.toString()] = [];
+				}
 
-						for (let i = 0; i < len; i++) {
-							data.push({
-								resource: <URI>uri,
-								marker: DiagnosticCollection._toMarkerData(diagnostics[i])
-							});
-						}
+				if (!diagnostics) {
+					// [Uri, undefined] means clear this
+					this._data[uri.toString()].length = 0;
+				} else {
+					this._data[uri.toString()].push(...diagnostics);
+				}
+			}
+		}
 
-						total += len;
-						if (total > 10 * DiagnosticCollection._maxDiagnosticsPerFile) {
-							console.warn('too many diagnostics will cap to %d', 10 * DiagnosticCollection._maxDiagnosticsPerFile);
-							break;
+		// compute change and send to main side
+		const entries: [URI, IMarkerData[]][] = [];
+		for (let uri of toSync) {
+			let marker: IMarkerData[];
+			let diagnostics = this._data[uri.toString()];
+			if (diagnostics) {
+
+				// no more than 250 diagnostics per file
+				if (diagnostics.length > DiagnosticCollection._maxDiagnosticsPerFile) {
+					marker = [];
+					const order = [DiagnosticSeverity.Error, DiagnosticSeverity.Warning, DiagnosticSeverity.Information, DiagnosticSeverity.Hint];
+					orderLoop: for (let i = 0; i < 4; i++) {
+						for (let diagnostic of diagnostics) {
+							if (diagnostic.severity === order[i]) {
+								const len = marker.push(DiagnosticCollection._toMarkerData(diagnostic));
+								if (len === DiagnosticCollection._maxDiagnosticsPerFile) {
+									break orderLoop;
+								}
+							}
 						}
 					}
+
+					// add 'signal' marker for showing omitted errors/warnings
+					marker.push({
+						severity: Severity.Error,
+						message: localize({ key: 'limitHit', comment: ['amount of errors/warning skipped due to limits'] }, "Not showing {0} further errors and warnings.", diagnostics.length - DiagnosticCollection._maxDiagnosticsPerFile),
+						startLineNumber: marker[marker.length - 1].startLineNumber,
+						startColumn: marker[marker.length - 1].startColumn,
+						endLineNumber: marker[marker.length - 1].endLineNumber,
+						endColumn: marker[marker.length - 1].endColumn
+					});
+				} else {
+					marker = diagnostics.map(DiagnosticCollection._toMarkerData);
 				}
 			}
 
-			// set or reset all
-			this._proxy._changeAll(this.name, data);
+			entries.push([<URI>uri, marker]);
 		}
+
+		this._proxy.$changeMany(this.name, entries);
 	}
 
 	delete(uri: vscode.Uri): void {
-		return this.set(uri, undefined);
+		this._checkDisposed();
+		delete this._data[uri.toString()];
+		this._proxy.$changeMany(this.name, [[<URI>uri, undefined]]);
 	}
 
 	clear(): void {
-		return this.set(undefined);
+		this._checkDisposed();
+		this._data = Object.create(null);
+		this._proxy.$clear(this.name);
+	}
+
+	forEach(callback: (uri: URI, diagnostics: vscode.Diagnostic[], collection: DiagnosticCollection) => any, thisArg?: any): void {
+		this._checkDisposed();
+		for (let key in this._data) {
+			let uri = URI.parse(key);
+			callback.apply(thisArg, [uri, this.get(uri), this]);
+		}
+	}
+
+	get(uri: URI): vscode.Diagnostic[] {
+		this._checkDisposed();
+		let result = this._data[uri.toString()];
+		if (Array.isArray(result)) {
+			return Object.freeze(result.slice(0));
+		}
+	}
+
+	has(uri: URI): boolean {
+		this._checkDisposed();
+		return Array.isArray(this._data[uri.toString()]);
 	}
 
 	private _checkDisposed() {
@@ -139,41 +200,50 @@ class DiagnosticCollection implements vscode.DiagnosticCollection {
 			default: return Severity.Error;
 		}
 	}
+
+	private static _compareTuplesByUri(a: [vscode.Uri, vscode.Diagnostic[]], b: [vscode.Uri, vscode.Diagnostic[]]): number {
+		return compare(a[0].toString(), b[0].toString());
+	}
 }
 
-export class ExtHostDiagnostics {
+export class ExtHostDiagnostics extends ExtHostDiagnosticsShape {
 
 	private static _idPool: number = 0;
-	private _proxy: MainThreadDiagnostics;
+
+	private _proxy: MainThreadDiagnosticsShape;
+	private _collections: DiagnosticCollection[];
 
 	constructor(threadService: IThreadService) {
-		this._proxy = threadService.getRemotable(MainThreadDiagnostics);
+		super();
+		this._proxy = threadService.get(MainContext.MainThreadDiagnostics);
+		this._collections = [];
 	}
 
 	createDiagnosticCollection(name: string): vscode.DiagnosticCollection {
 		if (!name) {
 			name = '_generated_diagnostic_collection_name_#' + ExtHostDiagnostics._idPool++;
 		}
-		return new DiagnosticCollection(name, this._proxy);
+
+		const {_collections, _proxy} = this;
+		const result = new class extends DiagnosticCollection {
+			constructor() {
+				super(name, _proxy);
+				_collections.push(this);
+			}
+			dispose() {
+				super.dispose();
+				let idx = _collections.indexOf(this);
+				if (idx !== -1) {
+					_collections.splice(idx, 1);
+				}
+			}
+		};
+
+		return result;
+	}
+
+	forEach(callback: (collection: DiagnosticCollection) => any): void {
+		this._collections.forEach(callback);
 	}
 }
 
-@Remotable.MainContext('MainThreadDiagnostics')
-export class MainThreadDiagnostics {
-
-	private _markerService: IMarkerService;
-
-	constructor(@IMarkerService markerService: IMarkerService) {
-		this._markerService = markerService;
-	}
-
-	_changeOne(owner: string, resource: URI, markers: IMarkerData[]): TPromise<any> {
-		this._markerService.changeOne(owner, resource, markers);
-		return undefined;
-	}
-
-	_changeAll(owner: string, data: IResourceMarker[]): TPromise<any> {
-		this._markerService.changeAll(owner, data);
-		return undefined;
-	}
-}

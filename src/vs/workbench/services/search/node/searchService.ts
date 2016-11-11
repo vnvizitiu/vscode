@@ -4,101 +4,111 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {PPromise} from 'vs/base/common/winjs.base';
+import { PPromise, TPromise } from 'vs/base/common/winjs.base';
 import uri from 'vs/base/common/uri';
 import glob = require('vs/base/common/glob');
 import objects = require('vs/base/common/objects');
 import scorer = require('vs/base/common/scorer');
 import strings = require('vs/base/common/strings');
-import {Client} from 'vs/base/node/service.cp';
-import {IProgress, LineMatch, FileMatch, ISearchComplete, ISearchProgressItem, QueryType, IFileMatch, ISearchQuery, ISearchConfiguration, ISearchService} from 'vs/platform/search/common/search';
-import {IUntitledEditorService} from 'vs/workbench/services/untitled/common/untitledEditorService';
-import {IModelService} from 'vs/editor/common/services/modelService';
-import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
-import {IConfigurationService} from 'vs/platform/configuration/common/configuration';
-import {IRawSearch, ISerializedSearchComplete, ISerializedSearchProgressItem, IRawSearchService, SearchService as RawSearchService} from 'vs/workbench/services/search/node/rawSearchService';
+import { getNextTickChannel } from 'vs/base/parts/ipc/common/ipc';
+import { Client } from 'vs/base/parts/ipc/node/ipc.cp';
+import { IProgress, LineMatch, FileMatch, ISearchComplete, ISearchProgressItem, QueryType, IFileMatch, ISearchQuery, ISearchConfiguration, ISearchService } from 'vs/platform/search/common/search';
+import { IUntitledEditorService } from 'vs/workbench/services/untitled/common/untitledEditorService';
+import { IModelService } from 'vs/editor/common/services/modelService';
+import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { IRawSearch, ISerializedSearchComplete, ISerializedSearchProgressItem, ISerializedFileMatch, IRawSearchService } from './search';
+import { ISearchChannel, SearchChannelClient } from './searchIpc';
+import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 
 export class SearchService implements ISearchService {
-	public serviceId = ISearchService;
+	public _serviceBrand: any;
 
 	private diskSearch: DiskSearch;
 
 	constructor(
 		@IModelService private modelService: IModelService,
 		@IUntitledEditorService private untitledEditorService: IUntitledEditorService,
+		@IEnvironmentService environmentService: IEnvironmentService,
 		@IWorkspaceContextService private contextService: IWorkspaceContextService,
 		@IConfigurationService private configurationService: IConfigurationService
 	) {
-		let config = contextService.getConfiguration();
-		this.diskSearch = new DiskSearch(!config.env.isBuilt || config.env.verboseLogging);
+		this.diskSearch = new DiskSearch(!environmentService.isBuilt || environmentService.verbose);
+	}
+
+	public extendQuery(query: ISearchQuery): void {
+		const configuration = this.configurationService.getConfiguration<ISearchConfiguration>();
+
+		// Configuration: Encoding
+		if (!query.fileEncoding) {
+			let fileEncoding = configuration && configuration.files && configuration.files.encoding;
+			query.fileEncoding = fileEncoding;
+		}
+
+		// Configuration: File Excludes
+		let fileExcludes = configuration && configuration.files && configuration.files.exclude;
+		if (fileExcludes) {
+			if (!query.excludePattern) {
+				query.excludePattern = fileExcludes;
+			} else {
+				objects.mixin(query.excludePattern, fileExcludes, false /* no overwrite */);
+			}
+		}
 	}
 
 	public search(query: ISearchQuery): PPromise<ISearchComplete, ISearchProgressItem> {
-		return this.configurationService.loadConfiguration().then((configuration: ISearchConfiguration) => {
+		this.extendQuery(query);
 
-			// Configuration: Encoding
-			if (!query.fileEncoding) {
-				let fileEncoding = configuration && configuration.files && configuration.files.encoding;
-				query.fileEncoding = fileEncoding;
-			}
+		let rawSearchQuery: PPromise<void, ISearchProgressItem>;
+		return new PPromise<ISearchComplete, ISearchProgressItem>((onComplete, onError, onProgress) => {
 
-			// Configuration: File Excludes
-			let fileExcludes = configuration && configuration.files && configuration.files.exclude;
-			if (fileExcludes) {
-				if (!query.excludePattern) {
-					query.excludePattern = fileExcludes;
-				} else {
-					objects.mixin(query.excludePattern, fileExcludes, false /* no overwrite */);
+			// Get local results from dirty/untitled
+			let localResultsFlushed = false;
+			let localResults = this.getLocalResults(query);
+
+			let flushLocalResultsOnce = function () {
+				if (!localResultsFlushed) {
+					localResultsFlushed = true;
+					Object.keys(localResults).map((key) => localResults[key]).filter((res) => !!res).forEach(onProgress);
 				}
-			}
+			};
 
-			let rawSearchQuery: PPromise<void, ISearchProgressItem>;
-			return new PPromise<ISearchComplete, ISearchProgressItem>((onComplete, onError, onProgress) => {
+			// Delegate to parent for real file results
+			rawSearchQuery = this.diskSearch.search(query).then(
 
-				// Get local results from dirty/untitled
-				let localResultsFlushed = false;
-				let localResults = this.getLocalResults(query);
-
-				let flushLocalResultsOnce = function() {
-					if (!localResultsFlushed) {
-						localResultsFlushed = true;
-						Object.keys(localResults).map((key) => localResults[key]).filter((res) => !!res).forEach(onProgress);
-					}
-				};
-
-				// Delegate to parent for real file results
-				rawSearchQuery = this.diskSearch.search(query).then(
-
-					// on Complete
-					(complete) => {
-						flushLocalResultsOnce();
-						onComplete({ results: complete.results.filter((match) => typeof localResults[match.resource.toString()] === 'undefined'), limitHit: complete.limitHit }); // dont override local results
-					},
-
-					// on Error
-					(error) => {
-						flushLocalResultsOnce();
-						onError(error);
-					},
-
-					// on Progress
-					(progress) => {
-						flushLocalResultsOnce();
-
-						// Match
-						if (progress.resource) {
-							if (typeof localResults[progress.resource.toString()] === 'undefined') { // don't override local results
-								onProgress(progress);
-							}
-						}
-
-						// Progress
-						else {
-							onProgress(<IProgress>progress);
-						}
+				// on Complete
+				(complete) => {
+					flushLocalResultsOnce();
+					onComplete({
+						limitHit: complete.limitHit,
+						results: complete.results.filter((match) => typeof localResults[match.resource.toString()] === 'undefined'), // dont override local results
+						stats: complete.stats
 					});
-			}, () => rawSearchQuery && rawSearchQuery.cancel());
-		});
+				},
+
+				// on Error
+				(error) => {
+					flushLocalResultsOnce();
+					onError(error);
+				},
+
+				// on Progress
+				(progress) => {
+					flushLocalResultsOnce();
+
+					// Match
+					if (progress.resource) {
+						if (typeof localResults[progress.resource.toString()] === 'undefined') { // don't override local results
+							onProgress(progress);
+						}
+					}
+
+					// Progress
+					else {
+						onProgress(<IProgress>progress);
+					}
+				});
+		}, () => rawSearchQuery && rawSearchQuery.cancel());
 	}
 
 	private getLocalResults(query: ISearchQuery): { [resourcePath: string]: IFileMatch; } {
@@ -107,7 +117,7 @@ export class SearchService implements ISearchService {
 		if (query.type === QueryType.Text) {
 			let models = this.modelService.getModels();
 			models.forEach((model) => {
-				let resource = model.getAssociatedResource();
+				let resource = model.uri;
 				if (!resource) {
 					return;
 				}
@@ -184,9 +194,13 @@ export class SearchService implements ISearchService {
 
 		return true;
 	}
+
+	public clearCache(cacheKey: string): TPromise<void> {
+		return this.diskSearch.clearCache(cacheKey);
+	}
 }
 
-class DiskSearch {
+export class DiskSearch {
 
 	private raw: IRawSearchService;
 
@@ -195,7 +209,7 @@ class DiskSearch {
 			uri.parse(require.toUrl('bootstrap')).fsPath,
 			{
 				serverName: 'Search',
-				timeout: 60 * 1000,
+				timeout: 60 * 60 * 1000,
 				args: ['--type=searchService'],
 				env: {
 					AMD_ENTRYPOINT: 'vs/workbench/services/search/node/searchApp',
@@ -205,11 +219,11 @@ class DiskSearch {
 			}
 		);
 
-		this.raw = client.getService<IRawSearchService>('SearchService', RawSearchService);
+		const channel = getNextTickChannel(client.getChannel<ISearchChannel>('search'));
+		this.raw = new SearchChannelClient(channel);
 	}
 
 	public search(query: ISearchQuery): PPromise<ISearchComplete, ISearchProgressItem> {
-		let result: IFileMatch[] = [];
 		let request: PPromise<ISerializedSearchComplete, ISerializedSearchProgressItem>;
 
 		let rawSearch: IRawSearch = {
@@ -218,7 +232,9 @@ class DiskSearch {
 			filePattern: query.filePattern,
 			excludePattern: query.excludePattern,
 			includePattern: query.includePattern,
-			maxResults: query.maxResults
+			maxResults: query.maxResults,
+			sortByScore: query.sortByScore,
+			cacheKey: query.cacheKey
 		};
 
 		if (query.type === QueryType.Text) {
@@ -232,25 +248,31 @@ class DiskSearch {
 			request = this.raw.textSearch(rawSearch);
 		}
 
+		return DiskSearch.collectResults(request);
+	}
+
+	public static collectResults(request: PPromise<ISerializedSearchComplete, ISerializedSearchProgressItem>): PPromise<ISearchComplete, ISearchProgressItem> {
+		let result: IFileMatch[] = [];
 		return new PPromise<ISearchComplete, ISearchProgressItem>((c, e, p) => {
 			request.done((complete) => {
 				c({
 					limitHit: complete.limitHit,
-					results: result
+					results: result,
+					stats: complete.stats
 				});
 			}, e, (data) => {
 
+				// Matches
+				if (Array.isArray(data)) {
+					const fileMatches = data.map(d => this.createFileMatch(d));
+					result = result.concat(fileMatches);
+					fileMatches.forEach(p);
+				}
+
 				// Match
-				if (data.path) {
-					let fileMatch = new FileMatch(uri.file(data.path));
+				else if ((<ISerializedFileMatch>data).path) {
+					const fileMatch = this.createFileMatch(<ISerializedFileMatch>data);
 					result.push(fileMatch);
-
-					if (data.lineMatches) {
-						for (let j = 0; j < data.lineMatches.length; j++) {
-							fileMatch.lineMatches.push(new LineMatch(data.lineMatches[j].preview, data.lineMatches[j].lineNumber, data.lineMatches[j].offsetAndLengths));
-						}
-					}
-
 					p(fileMatch);
 				}
 
@@ -260,5 +282,19 @@ class DiskSearch {
 				}
 			});
 		}, () => request.cancel());
+	}
+
+	private static createFileMatch(data: ISerializedFileMatch): FileMatch {
+		let fileMatch = new FileMatch(uri.file(data.path));
+		if (data.lineMatches) {
+			for (let j = 0; j < data.lineMatches.length; j++) {
+				fileMatch.lineMatches.push(new LineMatch(data.lineMatches[j].preview, data.lineMatches[j].lineNumber, data.lineMatches[j].offsetAndLengths));
+			}
+		}
+		return fileMatch;
+	}
+
+	public clearCache(cacheKey: string): TPromise<void> {
+		return this.raw.clearCache(cacheKey);
 	}
 }

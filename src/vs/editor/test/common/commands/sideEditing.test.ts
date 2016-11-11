@@ -5,19 +5,23 @@
 'use strict';
 
 import * as assert from 'assert';
-import {Cursor} from 'vs/editor/common/controller/cursor';
-import {EditOperation} from 'vs/editor/common/core/editOperation';
-import {Position} from 'vs/editor/common/core/position';
-import {Selection} from 'vs/editor/common/core/selection';
-import {IIdentifiedSingleEditOperation, DefaultEndOfLine} from 'vs/editor/common/editorCommon';
-import {Model} from 'vs/editor/common/model/model';
-import {ILineEdit, ModelLine} from 'vs/editor/common/model/modelLine';
-import {MockConfiguration} from 'vs/editor/test/common/mocks/mockConfiguration';
+import { Cursor } from 'vs/editor/common/controller/cursor';
+import { EditOperation } from 'vs/editor/common/core/editOperation';
+import { Position } from 'vs/editor/common/core/position';
+import { Range } from 'vs/editor/common/core/range';
+import { Selection } from 'vs/editor/common/core/selection';
+import { IIdentifiedSingleEditOperation } from 'vs/editor/common/editorCommon';
+import { Model } from 'vs/editor/common/model/model';
+import { ILineEdit, ModelLine } from 'vs/editor/common/model/modelLine';
+import { MockConfiguration } from 'vs/editor/test/common/mocks/mockConfiguration';
+import { viewModelHelper } from 'vs/editor/test/common/editorTestUtils';
 
-function testCommand(lines:string[], selection:Selection, edits:IIdentifiedSingleEditOperation[], expectedLines:string[], expectedSelection:Selection): void {
-	let model = new Model(lines.join('\n'), DefaultEndOfLine.LF, null);
+const NO_TAB_SIZE = 0;
+
+function testCommand(lines: string[], selection: Selection, edits: IIdentifiedSingleEditOperation[], expectedLines: string[], expectedSelection: Selection): void {
+	let model = Model.createFromString(lines.join('\n'));
 	let config = new MockConfiguration(null);
-	let cursor = new Cursor(0, config, model, null, false);
+	let cursor = new Cursor(0, config, model, viewModelHelper(model), false);
 
 	cursor.setSelections('tests', [selection]);
 
@@ -34,8 +38,8 @@ function testCommand(lines:string[], selection:Selection, edits:IIdentifiedSingl
 	model.dispose();
 }
 
-function testLineEditMarker(text:string, column:number, stickToPreviousCharacter:boolean, edit:ILineEdit, expectedColumn: number): void {
-	var line = new ModelLine(1, text);
+function testLineEditMarker(text: string, column: number, stickToPreviousCharacter: boolean, edit: ILineEdit, expectedColumn: number): void {
+	var line = new ModelLine(1, text, NO_TAB_SIZE);
 	line.addMarker({
 		id: '1',
 		line: null,
@@ -45,7 +49,7 @@ function testLineEditMarker(text:string, column:number, stickToPreviousCharacter
 		oldColumn: 0,
 	});
 
-	line.applyEdits({}, [edit]);
+	line.applyEdits({}, [edit], NO_TAB_SIZE);
 
 	assert.equal(line.getMarkers()[0].column, expectedColumn);
 }
@@ -60,9 +64,9 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,1,1,1),
+			new Selection(1, 1, 1, 1),
 			[
-				EditOperation.replace(new Selection(1,1,1,1), 'something ')
+				EditOperation.replace(new Selection(1, 1, 1, 1), 'something ')
 			],
 			[
 				'something first',
@@ -70,7 +74,7 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,1,1,11)
+			new Selection(1, 1, 1, 11)
 		);
 	});
 
@@ -82,9 +86,9 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,1,1,6),
+			new Selection(1, 1, 1, 6),
 			[
-				EditOperation.replace(new Selection(1,1,1,6), 'something')
+				EditOperation.replace(new Selection(1, 1, 1, 6), 'something')
 			],
 			[
 				'something',
@@ -92,7 +96,7 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,1,1,10)
+			new Selection(1, 1, 1, 10)
 		);
 	});
 
@@ -112,9 +116,9 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,1,1,1),
+			new Selection(1, 1, 1, 1),
 			[
-				EditOperation.insert(new Position(1,1), 'something ')
+				EditOperation.insert(new Position(1, 1), 'something ')
 			],
 			[
 				'something first',
@@ -122,7 +126,7 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,11,1,11)
+			new Selection(1, 11, 1, 11)
 		);
 	});
 
@@ -134,9 +138,9 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(1,6,1,6),
+			new Selection(1, 6, 1, 6),
 			[
-				EditOperation.insert(new Position(1,6), ' something\nnew ')
+				EditOperation.insert(new Position(1, 6), ' something\nnew ')
 			],
 			[
 				'first something',
@@ -145,7 +149,23 @@ suite('Editor Side Editing - collapsed selection', () => {
 				'third line',
 				'fourth'
 			],
-			new Selection(2,5,2,5)
+			new Selection(2, 5, 2, 5)
+		);
+	});
+
+	test('issue #3994: replace on top of selection', () => {
+		testCommand(
+			[
+				'$obj = New-Object "system.col"'
+			],
+			new Selection(1, 30, 1, 30),
+			[
+				EditOperation.replaceMove(new Range(1, 19, 1, 31), '"System.Collections"')
+			],
+			[
+				'$obj = New-Object "System.Collections"'
+			],
+			new Selection(1, 39, 1, 39)
 		);
 	});
 

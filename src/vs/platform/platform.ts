@@ -6,7 +6,7 @@
 
 import Types = require('vs/base/common/types');
 import Assert = require('vs/base/common/assert');
-import {IInstantiationService, IConstructorSignature0} from 'vs/platform/instantiation/common/instantiation';
+import { IInstantiationService, IConstructorSignature0 } from 'vs/platform/instantiation/common/instantiation';
 
 export interface IRegistry {
 
@@ -29,6 +29,7 @@ export interface IRegistry {
 	 * @param id an extension idenifier
 	 */
 	as(id: string): any;
+	as<T>(id: string): T;
 }
 
 class RegistryImpl implements IRegistry {

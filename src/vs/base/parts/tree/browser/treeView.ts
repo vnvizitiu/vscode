@@ -11,18 +11,17 @@ import Lifecycle = require('vs/base/common/lifecycle');
 import DOM = require('vs/base/browser/dom');
 import Diff = require('vs/base/common/diff/diff');
 import Touch = require('vs/base/browser/touch');
+import strings = require('vs/base/common/strings');
 import Mouse = require('vs/base/browser/mouseEvent');
 import Keyboard = require('vs/base/browser/keyboardEvent');
 import Model = require('vs/base/parts/tree/browser/treeModel');
 import dnd = require('./treeDnd');
 import { ArrayIterator, MappedIterator } from 'vs/base/common/iterator';
-import Scroll = require('vs/base/browser/ui/scrollbar/scrollableElement');
-import ScrollableElementImpl = require('vs/base/browser/ui/scrollbar/scrollableElementImpl');
-import { HeightMap } from 'vs/base/parts/tree/browser/treeViewModel';
+import { ScrollableElement } from 'vs/base/browser/ui/scrollbar/scrollableElement';
+import { ScrollbarVisibility } from 'vs/base/common/scrollable';
+import { HeightMap, IViewItem } from 'vs/base/parts/tree/browser/treeViewModel';
 import _ = require('vs/base/parts/tree/browser/tree');
-import { IViewItem } from 'vs/base/parts/tree/browser/treeViewModel';
-import {IScrollable} from 'vs/base/common/scrollable';
-import {KeyCode} from 'vs/base/common/keyCodes';
+import { KeyCode } from 'vs/base/common/keyCodes';
 
 export interface IRow {
 	element: HTMLElement;
@@ -45,7 +44,7 @@ function removeFromParent(element: HTMLElement): void {
 
 export class RowCache implements Lifecycle.IDisposable {
 
-	private _cache: { [templateId:string]: IRow[]; };
+	private _cache: { [templateId: string]: IRow[]; };
 	private scrollingRow: IRow;
 
 	constructor(private context: _.ITreeContext) {
@@ -57,7 +56,7 @@ export class RowCache implements Lifecycle.IDisposable {
 		var result = this.cache(templateId).pop();
 
 		if (!result) {
-			var content =  document.createElement('div');
+			var content = document.createElement('div');
 			content.className = 'content';
 
 			var row = document.createElement('div');
@@ -146,7 +145,7 @@ export class ViewItem implements IViewItem {
 
 	public top: number;
 	public height: number;
-	public onDragStart: (e: DragEvent)=>void;
+	public onDragStart: (e: DragEvent) => void;
 
 	public needsRender: boolean;
 	public uri: string;
@@ -233,7 +232,7 @@ export class ViewItem implements IViewItem {
 		// ARIA
 		this.element.setAttribute('role', 'treeitem');
 		if (this.model.hasTrait('focused')) {
-			const base64Id = btoa(this.model.id);
+			const base64Id = strings.safeBtoa(this.model.id);
 			const ariaLabel = this.context.accessibilityProvider.getAriaLabel(this.context.tree, this.model.getElement());
 
 			this.element.setAttribute('aria-selected', 'true');
@@ -260,7 +259,7 @@ export class ViewItem implements IViewItem {
 			this.element.style.paddingLeft = this.context.options.twistiePixels + ((this.model.getDepth() - 1) * this.context.options.indentPixels) + 'px';
 		} else {
 			this.element.style.paddingLeft = ((this.model.getDepth() - 1) * this.context.options.indentPixels) + 'px';
-			(<HTMLElement> this.row.element.firstElementChild).style.paddingLeft = this.context.options.twistiePixels + 'px';
+			(<HTMLElement>this.row.element.firstElementChild).style.paddingLeft = this.context.options.twistiePixels + 'px';
 		}
 
 		var uri = this.context.dnd.getDragURI(this.context.tree, this.model.getElement());
@@ -292,7 +291,7 @@ export class ViewItem implements IViewItem {
 			this.row = this.context.cache.alloc(this.templateId);
 
 			// used in reverse lookup from HTMLElement to Item
-			(<any> this.element)[TreeView.BINDING] = this;
+			(<any>this.element)[TreeView.BINDING] = this;
 		}
 
 		if (this.element.parentElement) {
@@ -325,7 +324,7 @@ export class ViewItem implements IViewItem {
 
 		this.uri = null;
 
-		(<any> this.element)[TreeView.BINDING] = null;
+		(<any>this.element)[TreeView.BINDING] = null;
 		this.context.cache.release(this.templateId, this.row);
 		this.row = null;
 	}
@@ -393,7 +392,7 @@ function reactionEquals(one: _.IDragOverReaction, other: _.IDragOverReaction): b
 	}
 }
 
-export class TreeView extends HeightMap implements IScrollable {
+export class TreeView extends HeightMap {
 
 	static BINDING = 'monaco-tree-row';
 	static LOADING_DECORATION_DELAY = 800;
@@ -401,29 +400,27 @@ export class TreeView extends HeightMap implements IScrollable {
 	private static currentExternalDragAndDropData: _.IDragAndDropData = null;
 
 	private context: IViewContext;
-	private modelListeners: { (): void; }[];
+	private modelListeners: Lifecycle.IDisposable[];
 	private model: Model.TreeModel;
 
 	private viewListeners: Lifecycle.IDisposable[];
 	private domNode: HTMLElement;
 	private wrapper: HTMLElement;
 	private rowsContainer: HTMLElement;
-	private scrollableElement: Scroll.IScrollableElement;
+	private scrollableElement: ScrollableElement;
 	private wrapperGesture: Touch.Gesture;
 	private msGesture: MSGesture;
-	private lastPointerType:string;
+	private lastPointerType: string;
 	private lastClickTimeStamp: number = 0;
 
-	private _viewHeight: number;
-	private renderTop: number;
-	private renderHeight: number;
-	private _scrollTop: number;
+	private lastRenderTop: number;
+	private lastRenderHeight: number;
 
 	private inputItem: ViewItem;
 	private items: { [id: string]: ViewItem; };
 
 	private isRefreshing = false;
-	private refreshingPreviousChildrenIds: { [id:string]:string[] } = {};
+	private refreshingPreviousChildrenIds: { [id: string]: string[] } = {};
 
 	private dragAndDropListeners: { (): void; }[];
 	private currentDragAndDropData: _.IDragAndDropData;
@@ -479,26 +476,26 @@ export class TreeView extends HeightMap implements IScrollable {
 			DOM.addClass(this.domNode, 'focused');
 		}
 
-		if (this.context.options.bare) {
-			DOM.addClass(this.domNode, 'bare');
-		}
-
 		if (!this.context.options.paddingOnRow) {
 			DOM.addClass(this.domNode, 'no-row-padding');
 		}
 
 		this.wrapper = document.createElement('div');
 		this.wrapper.className = 'monaco-tree-wrapper';
-		this.scrollableElement = new ScrollableElementImpl.ScrollableElement(this.wrapper, {
-			forbidTranslate3dUse: true,
-			scrollable: this,
-			horizontal: 'hidden',
-			vertical: context.options.verticalScrollMode || 'auto',
+		this.scrollableElement = new ScrollableElement(this.wrapper, {
+			canUseTranslate3d: false,
+			alwaysConsumeMouseWheel: true,
+			horizontal: ScrollbarVisibility.Hidden,
+			vertical: (typeof context.options.verticalScrollMode !== 'undefined' ? context.options.verticalScrollMode : ScrollbarVisibility.Auto),
 			useShadows: context.options.useShadows,
 			saveLastScrollTimeOnClassName: 'monaco-tree-row'
 		});
+		this.scrollableElement.onScroll((e) => {
+			this.render(e.scrollTop, e.height);
+			this.emit('scroll', e); // TODO@Joao: is anyone interested in this event?
+		});
 
-		if(Browser.isIE11orEarlier) {
+		if (Browser.isIE11orEarlier) {
 			this.wrapper.style.msTouchAction = 'none';
 			this.wrapper.style.msContentZooming = 'none';
 		} else {
@@ -522,12 +519,12 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.viewListeners.push(DOM.addDisposableListener(this.wrapper, Touch.EventType.Tap, (e) => this.onTap(e)));
 		this.viewListeners.push(DOM.addDisposableListener(this.wrapper, Touch.EventType.Change, (e) => this.onTouchChange(e)));
 
-		if(Browser.isIE11orEarlier) {
+		if (Browser.isIE11orEarlier) {
 			this.viewListeners.push(DOM.addDisposableListener(this.wrapper, 'MSPointerDown', (e) => this.onMsPointerDown(e)));
 			this.viewListeners.push(DOM.addDisposableListener(this.wrapper, 'MSGestureTap', (e) => this.onMsGestureTap(e)));
 
 			// these events come too fast, we throttle them
-			this.viewListeners.push(DOM.addDisposableThrottledListener<IThrottledGestureEvent>(this.wrapper, 'MSGestureChange', (e) => this.onThrottledMsGestureChange(e), (lastEvent:IThrottledGestureEvent, event:MSGestureEvent): IThrottledGestureEvent => {
+			this.viewListeners.push(DOM.addDisposableThrottledListener<IThrottledGestureEvent>(this.wrapper, 'MSGestureChange', (e) => this.onThrottledMsGestureChange(e), (lastEvent: IThrottledGestureEvent, event: MSGestureEvent): IThrottledGestureEvent => {
 				event.stopPropagation();
 				event.preventDefault();
 
@@ -551,10 +548,8 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.domNode.appendChild(this.scrollableElement.getDomNode());
 		container.appendChild(this.domNode);
 
-		this._scrollTop = 0;
-		this._viewHeight = 0;
-		this.renderTop = 0;
-		this.renderHeight = 0;
+		this.lastRenderTop = 0;
+		this.lastRenderHeight = 0;
 
 		this.didJustPressContextMenuKey = false;
 
@@ -596,13 +591,11 @@ export class TreeView extends HeightMap implements IScrollable {
 	public onVisible(): void {
 		this.scrollTop = this.onHiddenScrollTop;
 		this.onHiddenScrollTop = null;
-		this.scrollableElement.onElementDimensions();
-		this.scrollableElement.onElementInternalDimensions();
 		this.setupMSGesture();
 	}
 
 	private setupMSGesture(): void {
-		if((<any>window).MSGesture) {
+		if ((<any>window).MSGesture) {
 			this.msGesture = new MSGesture();
 			setTimeout(() => this.msGesture.target = this.wrapper, 100); // TODO@joh, TODO@IETeam
 		}
@@ -622,42 +615,34 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 
 		this.viewHeight = height || DOM.getContentHeight(this.wrapper); // render
-		this.scrollTop = this.scrollTop; // render
-
-		this.scrollableElement.onElementDimensions();
-		this.scrollableElement.onElementInternalDimensions();
 	}
 
 	private render(scrollTop: number, viewHeight: number): void {
-		var scrollBottom = scrollTop + viewHeight;
-		var thisScrollBottom = this.scrollTop + this.viewHeight;
 		var i: number;
 		var stop: number;
 
 		var renderTop = scrollTop;
-		renderTop = Math.max(renderTop, 0);
-
-		var renderBottom = scrollBottom;
-		var thisRenderBottom = thisScrollBottom === 0 ? 0 : thisScrollBottom;
+		var renderBottom = scrollTop + viewHeight;
+		var thisRenderBottom = this.lastRenderTop + this.lastRenderHeight;
 
 		// when view scrolls down, start rendering from the renderBottom
 		for (i = this.indexAfter(renderBottom) - 1, stop = this.indexAt(Math.max(thisRenderBottom, renderTop)); i >= stop; i--) {
-			this.insertItemInDOM(<ViewItem> this.itemAtIndex(i));
+			this.insertItemInDOM(<ViewItem>this.itemAtIndex(i));
 		}
 
 		// when view scrolls up, start rendering from either this.renderTop or renderBottom
-		for (i = Math.min(this.indexAt(this.renderTop), this.indexAfter(renderBottom)) - 1, stop = this.indexAt(renderTop); i >= stop; i--) {
-			this.insertItemInDOM(<ViewItem> this.itemAtIndex(i));
+		for (i = Math.min(this.indexAt(this.lastRenderTop), this.indexAfter(renderBottom)) - 1, stop = this.indexAt(renderTop); i >= stop; i--) {
+			this.insertItemInDOM(<ViewItem>this.itemAtIndex(i));
 		}
 
 		// when view scrolls down, start unrendering from renderTop
-		for (i = this.indexAt(this.renderTop), stop = Math.min(this.indexAt(renderTop), this.indexAfter(thisRenderBottom)); i < stop; i++) {
-			this.removeItemFromDOM(<ViewItem> this.itemAtIndex(i));
+		for (i = this.indexAt(this.lastRenderTop), stop = Math.min(this.indexAt(renderTop), this.indexAfter(thisRenderBottom)); i < stop; i++) {
+			this.removeItemFromDOM(<ViewItem>this.itemAtIndex(i));
 		}
 
 		// when view scrolls up, start unrendering from either renderBottom this.renderTop
-		for (i = Math.max(this.indexAfter(renderBottom), this.indexAt(this.renderTop)), stop = this.indexAfter(thisRenderBottom); i < stop; i++) {
-			this.removeItemFromDOM(<ViewItem> this.itemAtIndex(i));
+		for (i = Math.max(this.indexAfter(renderBottom), this.indexAt(this.lastRenderTop)), stop = this.indexAfter(thisRenderBottom); i < stop; i++) {
+			this.removeItemFromDOM(<ViewItem>this.itemAtIndex(i));
 		}
 
 		var topItem = this.itemAtIndex(this.indexAt(renderTop));
@@ -666,18 +651,18 @@ export class TreeView extends HeightMap implements IScrollable {
 			this.rowsContainer.style.top = (topItem.top - renderTop) + 'px';
 		}
 
-		this.renderTop = renderTop;
-		this.renderHeight = renderBottom - renderTop;
+		this.lastRenderTop = renderTop;
+		this.lastRenderHeight = renderBottom - renderTop;
 	}
 
 	public setModel(newModel: Model.TreeModel): void {
 		this.releaseModel();
 		this.model = newModel;
 
-		this.modelListeners.push(this.model.addBulkListener((e) => this.onModelEvents(e)));
+		this.modelListeners.push(this.model.addBulkListener2((e) => this.onModelEvents(e)));
 	}
 
-	private onModelEvents(events:any[]): void {
+	private onModelEvents(events: any[]): void {
 		var elementsToRefresh: Model.Item[] = [];
 
 		for (var i = 0, len = events.length; i < len; i++) {
@@ -750,10 +735,9 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 
 		this.scrollTop = scrollTop;
-		this.scrollableElement.onElementInternalDimensions();
 	}
 
-	public focusNextPage(eventPayload?:any): void {
+	public focusNextPage(eventPayload?: any): void {
 		var lastPageIndex = this.indexAt(this.scrollTop + this.viewHeight);
 		lastPageIndex = lastPageIndex === 0 ? 0 : lastPageIndex - 1;
 		var lastPageElement = this.itemAtIndex(lastPageIndex).model.getElement();
@@ -775,8 +759,8 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	public focusPreviousPage(eventPayload?:any): void {
-		var firstPageIndex:number;
+	public focusPreviousPage(eventPayload?: any): void {
+		var firstPageIndex: number;
 
 		if (this.scrollTop === 0) {
 			firstPageIndex = this.indexAt(this.scrollTop);
@@ -804,86 +788,55 @@ export class TreeView extends HeightMap implements IScrollable {
 	}
 
 	public get viewHeight() {
-		return this._viewHeight;
+		return this.scrollableElement.getHeight();
 	}
 
 	public set viewHeight(viewHeight: number) {
-		this.render(this.scrollTop, viewHeight);
-		this._viewHeight = viewHeight;
-	}
-
-	// IScrollable
-
-	public getScrollHeight():number {
-		return this.getTotalHeight();
-	}
-
-	public getScrollWidth():number {
-		return 0;
-	}
-
-	public getScrollLeft():number {
-		return 0;
-	}
-
-	public setScrollLeft(scrollLeft:number): void {
-		// noop
+		this.scrollableElement.updateState({
+			height: viewHeight,
+			scrollHeight: this.getTotalHeight()
+		});
 	}
 
 	public get scrollTop(): number {
-		return this._scrollTop;
-	}
-
-	public getScrollTop(): number {
-		return this._scrollTop;
+		return this.scrollableElement.getScrollTop();
 	}
 
 	public set scrollTop(scrollTop: number) {
-		this.setScrollTop(scrollTop);
-	}
-
-	public setScrollTop(scrollTop: number): void {
-		scrollTop = Math.min(scrollTop, this.getTotalHeight() - this.viewHeight);
-		scrollTop = Math.max(scrollTop, 0);
-
-		this.render(scrollTop, this.viewHeight);
-		this._scrollTop = scrollTop;
-
-		this.emit('scroll', { vertical: true, horizontal: false });
-	}
-
-	public addScrollListener(callback:()=>void): Lifecycle.IDisposable {
-		return this.addListener2('scroll', callback);
+		this.scrollableElement.updateState({
+			scrollTop: scrollTop,
+			scrollHeight: this.getTotalHeight()
+		});
 	}
 
 	public getScrollPosition(): number {
-		const height =  this.getTotalHeight() - this.viewHeight;
+		const height = this.getTotalHeight() - this.viewHeight;
 		return height <= 0 ? 0 : this.scrollTop / height;
 	}
 
 	public setScrollPosition(pos: number): void {
-		const height =  this.getTotalHeight() - this.viewHeight;
+		const height = this.getTotalHeight() - this.viewHeight;
 		this.scrollTop = height * pos;
 	}
 
 	// Events
 
-	private onClearingInput(e:Model.IInputEvent): void {
-		var item = <Model.Item> e.item;
+	private onClearingInput(e: Model.IInputEvent): void {
+		var item = <Model.Item>e.item;
 		if (item) {
 			this.onRemoveItems(new MappedIterator(item.getNavigator(), item => item && item.id));
 			this.onRowsChanged();
 		}
 	}
 
-	private onSetInput(e:Model.IInputEvent): void {
+	private onSetInput(e: Model.IInputEvent): void {
 		this.context.cache.garbageCollect();
-		this.inputItem = new RootViewItem(this.context, <Model.Item> e.item, this.wrapper);
+		this.inputItem = new RootViewItem(this.context, <Model.Item>e.item, this.wrapper);
 		this.emit('viewItem:create', { item: this.inputItem.model });
 	}
 
-	private onItemChildrenRefreshing(e:Model.IItemChildrenRefreshEvent): void {
-		var item = <Model.Item> e.item;
+	private onItemChildrenRefreshing(e: Model.IItemChildrenRefreshEvent): void {
+		var item = <Model.Item>e.item;
 		var viewItem = this.items[item.id];
 
 		if (viewItem) {
@@ -906,8 +859,8 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemChildrenRefreshed(e:Model.IItemChildrenRefreshEvent): void {
-		var item = <Model.Item> e.item;
+	private onItemChildrenRefreshed(e: Model.IItemChildrenRefreshEvent): void {
+		var item = <Model.Item>e.item;
 		var viewItem = this.items[item.id];
 
 		if (viewItem) {
@@ -936,11 +889,11 @@ export class TreeView extends HeightMap implements IScrollable {
 			if (!skipDiff) {
 				const lcs = new Diff.LcsDiff({
 					getLength: () => previousChildrenIds.length,
-					getElementHash: (i:number) => previousChildrenIds[i]
+					getElementHash: (i: number) => previousChildrenIds[i]
 				}, {
-					getLength: () => afterModelItems.length,
-					getElementHash: (i:number) => afterModelItems[i].id
-				}, null);
+						getLength: () => afterModelItems.length,
+						getElementHash: (i: number) => afterModelItems[i].id
+					}, null);
 
 				diff = lcs.ComputeDiff();
 
@@ -989,20 +942,20 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemsRefresh(items:Model.Item[]): void {
+	private onItemsRefresh(items: Model.Item[]): void {
 		this.onRefreshItemSet(items.filter(item => this.items.hasOwnProperty(item.id)));
 		this.onRowsChanged();
 	}
 
-	private onItemExpanding(e:Model.IItemExpandEvent): void {
+	private onItemExpanding(e: Model.IItemExpandEvent): void {
 		var viewItem = this.items[e.item.id];
 		if (viewItem) {
 			viewItem.expanded = true;
 		}
 	}
 
-	private onItemExpanded(e:Model.IItemExpandEvent): void {
-		var item = <Model.Item> e.item;
+	private onItemExpanded(e: Model.IItemExpandEvent): void {
+		var item = <Model.Item>e.item;
 		var viewItem = this.items[item.id];
 		if (viewItem) {
 			viewItem.expanded = true;
@@ -1018,8 +971,8 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemCollapsing(e:Model.IItemCollapseEvent): void {
-		var item = <Model.Item> e.item;
+	private onItemCollapsing(e: Model.IItemCollapseEvent): void {
+		var item = <Model.Item>e.item;
 		var viewItem = this.items[item.id];
 		if (viewItem) {
 			viewItem.expanded = false;
@@ -1028,9 +981,19 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemReveal(e:Model.IItemRevealEvent): void {
-		var item = <Model.Item> e.item;
-		var relativeTop = <number> e.relativeTop;
+	public getRelativeTop(item: Model.Item): number {
+		if (item && item.isVisible()) {
+			var viewItem = this.items[item.id];
+			if (viewItem) {
+				return (viewItem.top - this.scrollTop) / (this.viewHeight - viewItem.height);
+			}
+		}
+		return -1;
+	}
+
+	private onItemReveal(e: Model.IItemRevealEvent): void {
+		var item = <Model.Item>e.item;
+		var relativeTop = <number>e.relativeTop;
 		var viewItem = this.items[item.id];
 		if (viewItem) {
 			if (relativeTop !== null) {
@@ -1053,9 +1016,9 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemAddTrait(e:Model.IItemTraitEvent): void {
-		var item = <Model.Item> e.item;
-		var trait = <string> e.trait;
+	private onItemAddTrait(e: Model.IItemTraitEvent): void {
+		var item = <Model.Item>e.item;
+		var trait = <string>e.trait;
 		var viewItem = this.items[item.id];
 		if (viewItem) {
 			viewItem.addClass(trait);
@@ -1073,9 +1036,9 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onItemRemoveTrait(e:Model.IItemTraitEvent): void {
-		var item = <Model.Item> e.item;
-		var trait = <string> e.trait;
+	private onItemRemoveTrait(e: Model.IItemTraitEvent): void {
+		var item = <Model.Item>e.item;
+		var trait = <string>e.trait;
 		var viewItem = this.items[item.id];
 		if (viewItem) {
 			viewItem.removeClass(trait);
@@ -1087,7 +1050,7 @@ export class TreeView extends HeightMap implements IScrollable {
 			if (this.highlightedItemWasDraggable) {
 				viewItem.draggable = true;
 			}
-			delete this.highlightedItemWasDraggable;
+			this.highlightedItemWasDraggable = false;
 		}
 	}
 
@@ -1098,7 +1061,7 @@ export class TreeView extends HeightMap implements IScrollable {
 
 		// ARIA
 		if (focus) {
-			this.domNode.setAttribute('aria-activedescendant', btoa(this.context.dataSource.getId(this.context.tree, focus)));
+			this.domNode.setAttribute('aria-activedescendant', strings.safeBtoa(this.context.dataSource.getId(this.context.tree, focus)));
 		} else {
 			this.domNode.removeAttribute('aria-activedescendant');
 		}
@@ -1113,7 +1076,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.items[item.id] = item;
 	}
 
-	public onRefreshItem(item: ViewItem, needsRender= false): void {
+	public onRefreshItem(item: ViewItem, needsRender = false): void {
 		item.needsRender = item.needsRender || needsRender;
 		this.refreshViewItem(item);
 	}
@@ -1141,7 +1104,7 @@ export class TreeView extends HeightMap implements IScrollable {
 
 	// DOM Events
 
-	private onClick(e:MouseEvent): void {
+	private onClick(e: MouseEvent): void {
 		if (this.lastPointerType && this.lastPointerType !== 'mouse') {
 			return;
 		}
@@ -1153,7 +1116,7 @@ export class TreeView extends HeightMap implements IScrollable {
 			return;
 		}
 
-		if(Browser.isIE10orLater && Date.now() - this.lastClickTimeStamp < 300) {
+		if (Browser.isIE10orLater && Date.now() - this.lastClickTimeStamp < 300) {
 			// IE10+ doesn't set the detail property correctly. While IE10 simply
 			// counts the number of clicks, IE11 reports always 1. To align with
 			// other browser, we set the value to 2 if clicks events come in a 300ms
@@ -1165,7 +1128,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onClick(this.context.tree, item.model.getElement(), event);
 	}
 
-	private onMouseDown(e:MouseEvent): void {
+	private onMouseDown(e: MouseEvent): void {
 		this.didJustPressContextMenuKey = false;
 
 		if (!this.context.controller.onMouseDown) {
@@ -1191,7 +1154,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onMouseDown(this.context.tree, item.model.getElement(), event);
 	}
 
-	private onMouseUp(e:MouseEvent): void {
+	private onMouseUp(e: MouseEvent): void {
 		if (!this.context.controller.onMouseUp) {
 			return;
 		}
@@ -1215,8 +1178,8 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onMouseUp(this.context.tree, item.model.getElement(), event);
 	}
 
-	private onTap(e:Touch.GestureEvent): void {
-		var item = this.getItemAround(<HTMLElement> e.initialTarget);
+	private onTap(e: Touch.GestureEvent): void {
+		var item = this.getItemAround(<HTMLElement>e.initialTarget);
 
 		if (!item) {
 			return;
@@ -1225,7 +1188,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onTap(this.context.tree, item.model.getElement(), e);
 	}
 
-	private onTouchChange(event:Touch.GestureEvent): void {
+	private onTouchChange(event: Touch.GestureEvent): void {
 		event.preventDefault();
 		event.stopPropagation();
 
@@ -1250,12 +1213,12 @@ export class TreeView extends HeightMap implements IScrollable {
 
 			var id = this.context.dataSource.getId(this.context.tree, element);
 			var viewItem = this.items[id];
-			var position = DOM.getDomNodePosition(viewItem.element);
+			var position = DOM.getDomNodePagePosition(viewItem.element);
 
 			resultEvent = new _.KeyboardContextMenuEvent(position.left + position.width, position.top, keyboardEvent);
 
-		} else  {
-			var mouseEvent = new Mouse.StandardMouseEvent(<MouseEvent> event);
+		} else {
+			var mouseEvent = new Mouse.StandardMouseEvent(<MouseEvent>event);
 			var item = this.getItemAround(mouseEvent.target);
 
 			if (!item) {
@@ -1269,7 +1232,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onContextMenu(this.context.tree, element, resultEvent);
 	}
 
-	private onKeyDown(e:KeyboardEvent): void {
+	private onKeyDown(e: KeyboardEvent): void {
 		var event = new Keyboard.StandardKeyboardEvent(e);
 
 		this.didJustPressContextMenuKey = event.keyCode === KeyCode.ContextMenu || (event.shiftKey && event.keyCode === KeyCode.F10);
@@ -1286,7 +1249,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onKeyDown(this.context.tree, event);
 	}
 
-	private onKeyUp(e:KeyboardEvent): void {
+	private onKeyUp(e: KeyboardEvent): void {
 		if (this.didJustPressContextMenuKey) {
 			this.onContextMenu(e);
 		}
@@ -1295,7 +1258,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.context.controller.onKeyUp(this.context.tree, new Keyboard.StandardKeyboardEvent(e));
 	}
 
-	private onDragStart(item: ViewItem, e:any): void {
+	private onDragStart(item: ViewItem, e: any): void {
 		if (this.model.getHighlight()) {
 			return;
 		}
@@ -1312,18 +1275,21 @@ export class TreeView extends HeightMap implements IScrollable {
 
 		e.dataTransfer.effectAllowed = 'copyMove';
 		e.dataTransfer.setData('URL', item.uri);
-		if(e.dataTransfer.setDragImage) {
-			if (elements.length === 1 && item.element) {
-				e.dataTransfer.setDragImage(item.element, e.offsetX || 6, e.offsetY || 6);
+		if (e.dataTransfer.setDragImage) {
+			let label: string;
 
-			} else if (elements.length > 1) {
-				var dragImage = document.createElement('div');
-				dragImage.className = 'monaco-tree-drag-image';
-				dragImage.textContent = '' + elements.length;
-				document.body.appendChild(dragImage);
-				e.dataTransfer.setDragImage(dragImage, -10, -10);
-				setTimeout(() => document.body.removeChild(dragImage), 0);
+			if (this.context.dnd.getDragLabel) {
+				label = this.context.dnd.getDragLabel(this.context.tree, elements);
+			} else {
+				label = String(elements.length);
 			}
+
+			const dragImage = document.createElement('div');
+			dragImage.className = 'monaco-tree-drag-image';
+			dragImage.textContent = label;
+			document.body.appendChild(dragImage);
+			e.dataTransfer.setDragImage(dragImage, -10, -10);
+			setTimeout(() => document.body.removeChild(dragImage), 0);
 		}
 
 		this.currentDragAndDropData = new dnd.ElementsDragAndDropData(elements);
@@ -1379,7 +1345,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 	}
 
-	private onDragOver(e:DragEvent): boolean {
+	private onDragOver(e: DragEvent): boolean {
 		var event = new Mouse.DragMouseEvent(e);
 
 		var viewItem = this.getItemAround(event.target);
@@ -1400,9 +1366,9 @@ export class TreeView extends HeightMap implements IScrollable {
 			}
 
 			this.cancelDragAndDropScrollInterval();
-			delete this.currentDropTarget;
-			delete this.currentDropElement;
-			delete this.dragAndDropMouseY;
+			this.currentDropTarget = null;
+			this.currentDropElement = null;
+			this.dragAndDropMouseY = null;
 
 			return false;
 		}
@@ -1444,7 +1410,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		} while (item);
 
 		if (!item) {
-			delete this.currentDropElement;
+			this.currentDropElement = null;
 			return false;
 		}
 
@@ -1455,7 +1421,7 @@ export class TreeView extends HeightMap implements IScrollable {
 			event.preventDefault();
 			event.dataTransfer.dropEffect = reaction.effect === _.DragOverEffect.COPY ? 'copy' : 'move';
 		} else {
-			delete this.currentDropElement;
+			this.currentDropElement = null;
 		}
 
 		// item is the model item where drop() should be called
@@ -1510,7 +1476,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		return true;
 	}
 
-	private onDrop(e:DragEvent): void {
+	private onDrop(e: DragEvent): void {
 		if (this.currentDropElement) {
 			var event = new Mouse.DragMouseEvent(e);
 			event.preventDefault();
@@ -1521,7 +1487,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.cancelDragAndDropScrollInterval();
 	}
 
-	private onDragEnd(e:DragEvent): void {
+	private onDragEnd(e: DragEvent): void {
 		if (this.currentDropTarget) {
 			this.currentDropTargets.forEach(i => i.dropTarget = false);
 			this.currentDropTargets = [];
@@ -1533,11 +1499,11 @@ export class TreeView extends HeightMap implements IScrollable {
 		}
 
 		this.cancelDragAndDropScrollInterval();
-		delete this.currentDragAndDropData;
+		this.currentDragAndDropData = null;
 		TreeView.currentExternalDragAndDropData = null;
-		delete this.currentDropElement;
-		delete this.currentDropTarget;
-		delete this.dragAndDropMouseY;
+		this.currentDropElement = null;
+		this.currentDropTarget = null;
+		this.dragAndDropMouseY = null;
 	}
 
 	private onFocus(): void {
@@ -1556,7 +1522,7 @@ export class TreeView extends HeightMap implements IScrollable {
 
 	// MS specific DOM Events
 
-	private onMsPointerDown(event: MSPointerEvent):void {
+	private onMsPointerDown(event: MSPointerEvent): void {
 		if (!this.msGesture) {
 			return;
 		}
@@ -1578,20 +1544,20 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.msGesture.addPointer(event.pointerId);
 	}
 
-	private onThrottledMsGestureChange(event: IThrottledGestureEvent):void {
+	private onThrottledMsGestureChange(event: IThrottledGestureEvent): void {
 		this.scrollTop -= event.translationY;
 	}
 
-	private onMsGestureTap(event:MSGestureEvent):void {
-		(<any> event).initialTarget = document.elementFromPoint(event.clientX, event.clientY);
-		this.onTap(<any> event);
+	private onMsGestureTap(event: MSGestureEvent): void {
+		(<any>event).initialTarget = document.elementFromPoint(event.clientX, event.clientY);
+		this.onTap(<any>event);
 	}
 
 	// DOM changes
 
 	private insertItemInDOM(item: ViewItem): void {
 		var elementAfter: HTMLElement = null;
-		var itemAfter = <ViewItem> this.itemAfter(item);
+		var itemAfter = <ViewItem>this.itemAfter(item);
 
 		if (itemAfter && itemAfter.element) {
 			elementAfter = itemAfter.element;
@@ -1607,14 +1573,14 @@ export class TreeView extends HeightMap implements IScrollable {
 	// Helpers
 
 	private shouldBeRendered(item: ViewItem): boolean {
-		return item.top < this.renderTop + this.renderHeight && item.top + item.height > this.renderTop;
+		return item.top < this.lastRenderTop + this.lastRenderHeight && item.top + item.height > this.lastRenderTop;
 	}
 
 	private getItemAround(element: HTMLElement): ViewItem {
-		var candidate:ViewItem = this.inputItem;
+		var candidate: ViewItem = this.inputItem;
 		do {
-			if ((<any> element)[TreeView.BINDING]) {
-				candidate = (<any> element)[TreeView.BINDING];
+			if ((<any>element)[TreeView.BINDING]) {
+				candidate = (<any>element)[TreeView.BINDING];
 			}
 
 			if (element === this.wrapper || element === this.domNode) {
@@ -1631,9 +1597,7 @@ export class TreeView extends HeightMap implements IScrollable {
 
 	private releaseModel(): void {
 		if (this.model) {
-			while (this.modelListeners.length) {
-				this.modelListeners.pop()();
-			}
+			this.modelListeners = Lifecycle.dispose(this.modelListeners);
 			this.model = null;
 		}
 	}
@@ -1645,7 +1609,7 @@ export class TreeView extends HeightMap implements IScrollable {
 		this.releaseModel();
 		this.modelListeners = null;
 
-		this.viewListeners = Lifecycle.disposeAll(this.viewListeners);
+		this.viewListeners = Lifecycle.dispose(this.viewListeners);
 
 		if (this.domNode.parentNode) {
 			this.domNode.parentNode.removeChild(this.domNode);

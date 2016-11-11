@@ -11,34 +11,40 @@ import fs = require('fs');
 import gracefulFs = require('graceful-fs');
 gracefulFs.gracefulify(fs);
 
-import {TPromise} from 'vs/base/common/winjs.base';
-import {FileChangeType} from 'vs/platform/files/common/files';
-import {ThrottledDelayer} from 'vs/base/common/async';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { FileChangeType } from 'vs/platform/files/common/files';
+import { ThrottledDelayer } from 'vs/base/common/async';
 import strings = require('vs/base/common/strings');
-
-import {IWatcherRequest, WatcherService} from 'vs/workbench/services/files/node/watcher/unix/watcherService';
 import watcher = require('vs/workbench/services/files/node/watcher/common');
+import { IWatcherRequest, IWatcherService } from './watcher';
 
-export class ChokidarWatcherService extends WatcherService {
+export class ChokidarWatcherService implements IWatcherService {
 
 	private static FS_EVENT_DELAY = 50; // aggregate and only emit events when changes have stopped for this duration (in ms)
 	private static EVENT_SPAM_WARNING_THRESHOLD = 60 * 1000; // warn after certain time span of event spam
 
-	private spamCheckStartTime:number;
-	private spamWarningLogged:boolean;
+	private spamCheckStartTime: number;
+	private spamWarningLogged: boolean;
 
 	public watch(request: IWatcherRequest): TPromise<void> {
-		let watcherOpts: any = {
+		const watcherOpts: chokidar.IOptions = {
 			ignoreInitial: true,
 			ignorePermissionErrors: true,
 			followSymlinks: true, // this is the default of chokidar and supports file events through symlinks
-			ignored: request.ignored
+			ignored: request.ignored,
+			interval: 1000, // while not used in normal cases, if any error causes chokidar to fallback to polling, increase its intervals
+			binaryInterval: 1000
 		};
 
-		let chokidarWatcher = chokidar.watch(request.basePath, watcherOpts);
+		const chokidarWatcher = chokidar.watch(request.basePath, watcherOpts);
+
+		// Detect if for some reason the native watcher library fails to load
+		if (process.platform === 'darwin' && !chokidarWatcher.options.useFsEvents) {
+			console.error('Watcher is not using native fsevents library and is falling back to unefficient polling.');
+		}
 
 		let undeliveredFileEvents: watcher.IRawFileChange[] = [];
-		let fileEventDelayer = new ThrottledDelayer(ChokidarWatcherService.FS_EVENT_DELAY);
+		const fileEventDelayer = new ThrottledDelayer(ChokidarWatcherService.FS_EVENT_DELAY);
 
 		return new TPromise<void>((c, e, p) => {
 			chokidarWatcher.on('all', (type: string, path: string) => {
@@ -80,7 +86,7 @@ export class ChokidarWatcherService extends WatcherService {
 					}
 
 					// Check for spam
-					let now = Date.now();
+					const now = Date.now();
 					if (undeliveredFileEvents.length === 0) {
 						this.spamWarningLogged = false;
 						this.spamCheckStartTime = now;
@@ -94,11 +100,11 @@ export class ChokidarWatcherService extends WatcherService {
 
 					// Delay and send buffer
 					fileEventDelayer.trigger(() => {
-						let events = undeliveredFileEvents;
+						const events = undeliveredFileEvents;
 						undeliveredFileEvents = [];
 
 						// Broadcast to clients normalized
-						let res = watcher.normalize(events);
+						const res = watcher.normalize(events);
 						p(res);
 
 						// Logging

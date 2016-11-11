@@ -11,6 +11,7 @@ import * as Strings from 'vs/base/common/strings';
 import * as Assert from 'vs/base/common/assert';
 import * as Paths from 'vs/base/common/paths';
 import * as Types from 'vs/base/common/types';
+import * as UUID from 'vs/base/common/uuid';
 import Severity from 'vs/base/common/severity';
 import URI from 'vs/base/common/uri';
 
@@ -281,8 +282,8 @@ class AbstractLineMatcher implements ILineMatcher {
 	}
 
 	private createLocation(startLine: number, startColumn: number, endLine: number, endColumn: number): Location {
-		if (startLine && startColumn && endLine && endColumn) {
-			return { startLineNumber: startLine, startColumn: startColumn, endLineNumber: endLine, endColumn: endColumn };
+		if (startLine && startColumn && endColumn) {
+			return { startLineNumber: startLine, startColumn: startColumn, endLineNumber: endLine || startLine, endColumn: endColumn };
 		}
 		if (startLine && startColumn) {
 			return { startLineNumber: startLine, startColumn: startColumn, endLineNumber: startLine, endColumn: startColumn };
@@ -394,7 +395,7 @@ class MultiLineMatcher extends AbstractLineMatcher {
 
 let _defaultPatterns: { [name: string]: ProblemPattern | ProblemPattern[]; } = Object.create(null);
 _defaultPatterns['msCompile'] = {
-	regexp: /^([^\s].*)\((\d+|\d+,\d+|\d+,\d+,\d+,\d+)\):\s+(error|warning|info)\s+(\w{1,2}\d+)\s*:\s*(.*)$/,
+	regexp: /^([^\s].*)\((\d+|\d+,\d+|\d+,\d+,\d+,\d+)\)\s*:\s+(error|warning|info)\s+(\w{1,2}\d+)\s*:\s*(.*)$/,
 	file: 1,
 	location: 2,
 	severity: 3,
@@ -494,6 +495,13 @@ _defaultPatterns['eslint-stylish'] = [
 		loop: true
 	}
 ];
+_defaultPatterns['go'] = {
+	regexp: /^([^:]*: )?((.:)?[^:]*):(\d+)(:(\d+))?: (.*)$/,
+	file: 2,
+	line: 4,
+	column: 6,
+	message: 7
+};
 
 export function defaultPattern(name: 'msCompile'): ProblemPattern;
 export function defaultPattern(name: 'tsc'): ProblemPattern;
@@ -503,6 +511,7 @@ export function defaultPattern(name: 'vb'): ProblemPattern;
 export function defaultPattern(name: 'lessCompile'): ProblemPattern;
 export function defaultPattern(name: 'jshint'): ProblemPattern;
 export function defaultPattern(name: 'gulp-tsc'): ProblemPattern;
+export function defaultPattern(name: 'go'): ProblemPattern;
 export function defaultPattern(name: 'jshint-stylish'): ProblemPattern[];
 export function defaultPattern(name: string): ProblemPattern | ProblemPattern[];
 export function defaultPattern(name: string): ProblemPattern | ProblemPattern[] {
@@ -656,7 +665,7 @@ export namespace Config {
 		* The owner of the produced VSCode problem. This is typically
 		* the identifier of a VSCode language service if the problems are
 		* to be merged with the one produced by the language service
-		* or 'external'. Defaults to 'external' if omitted.
+		* or a generated internal id. Defaults to the generated internal id.
 		*/
 		owner?: string;
 
@@ -764,7 +773,7 @@ export class ProblemMatcherParser extends Parser {
 	private createProblemMatcher(description: Config.ProblemMatcher): ProblemMatcher {
 		let result: ProblemMatcher = null;
 
-		let owner = description.owner ? description.owner : 'external';
+		let owner = description.owner ? description.owner : UUID.generateUuid();
 		let applyTo = Types.isString(description.applyTo) ? ApplyToKind.fromString(description.applyTo) : ApplyToKind.allDocuments;
 		if (!applyTo) {
 			applyTo = ApplyToKind.allDocuments;
@@ -898,14 +907,14 @@ export class ProblemMatcherParser extends Parser {
 			if (result.location) {
 				result = Objects.mixin(result, {
 					file: 1,
-					message: 4
+					message: 0
 				}, false);
 			} else {
 				result = Objects.mixin(result, {
 					file: 1,
 					line: 2,
 					column: 3,
-					message: 4
+					message: 0
 				}, false);
 			}
 		}
@@ -916,10 +925,10 @@ export class ProblemMatcherParser extends Parser {
 		let file: boolean, message: boolean, location: boolean, line: boolean;
 		let regexp: number = 0;
 		values.forEach(pattern => {
-			file = file || !!pattern.file;
-			message = message || !!pattern.message;
-			location = location || !!pattern.location;
-			line = line || !!pattern.line;
+			file = file || !Types.isUndefined(pattern.file);
+			message = message || !Types.isUndefined(pattern.message);
+			location = location || !Types.isUndefined(pattern.location);
+			line = line || !Types.isUndefined(pattern.line);
 			if (pattern.regexp) {
 				regexp++;
 			}
@@ -1000,7 +1009,7 @@ export class ProblemMatcherParser extends Parser {
 	}
 }
 
-// let problemMatchersExtPoint = PluginsRegistry.registerExtensionPoint<Config.NamedProblemMatcher | Config.NamedProblemMatcher[]>('problemMatchers', {
+// let problemMatchersExtPoint = ExtensionsRegistry.registerExtensionPoint<Config.NamedProblemMatcher | Config.NamedProblemMatcher[]>('problemMatchers', {
 // TODO@Dirk: provide here JSON schema for extension point
 // });
 
@@ -1101,21 +1110,21 @@ registry.add('gulp-tsc', {
 });
 
 registry.add('jshint', {
-	owner: 'javascript',
+	owner: 'jshint',
 	applyTo: ApplyToKind.allDocuments,
 	fileLocation: FileLocationKind.Absolute,
 	pattern: defaultPattern('jshint')
 });
 
 registry.add('jshint-stylish', {
-	owner: 'javascript',
+	owner: 'jshint',
 	applyTo: ApplyToKind.allDocuments,
 	fileLocation: FileLocationKind.Absolute,
 	pattern: defaultPattern('jshint-stylish')
 });
 
 registry.add('eslint-compact', {
-	owner: 'javascript',
+	owner: 'eslint',
 	applyTo: ApplyToKind.allDocuments,
 	fileLocation: FileLocationKind.Relative,
 	filePrefix: '${cwd}',
@@ -1123,8 +1132,16 @@ registry.add('eslint-compact', {
 });
 
 registry.add('eslint-stylish', {
-	owner: 'javascript',
+	owner: 'eslint',
 	applyTo: ApplyToKind.allDocuments,
 	fileLocation: FileLocationKind.Absolute,
 	pattern: defaultPattern('eslint-stylish')
+});
+
+registry.add('go', {
+	owner: 'go',
+	applyTo: ApplyToKind.allDocuments,
+	fileLocation: FileLocationKind.Relative,
+	filePrefix: '${cwd}',
+	pattern: defaultPattern('go')
 });

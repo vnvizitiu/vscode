@@ -18,7 +18,7 @@ export interface IForkOpts {
 	execArgv?: string[];
 }
 
-function makeRandomHexString(length:number): string {
+function makeRandomHexString(length: number): string {
 	let chars = ['0', '1', '2', '3', '4', '5', '6', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
 	let result = '';
 	for (let i = 0; i < length; i++) {
@@ -38,22 +38,23 @@ function generatePipeName(): string {
 	return path.join(os.tmpdir(), randomName + '.sock');
 }
 
-function generatePatchedEnv(env:any, stdInPipeName:string, stdOutPipeName:string): any {
+function generatePatchedEnv(env: any, stdInPipeName: string, stdOutPipeName: string, stdErrPipeName: string): any {
 	// Set the two unique pipe names and the electron flag as process env
 
-	let newEnv:any = {};
+	let newEnv: any = {};
 	for (let key in env) {
 		newEnv[key] = env[key];
 	}
 
 	newEnv['STDIN_PIPE_NAME'] = stdInPipeName;
 	newEnv['STDOUT_PIPE_NAME'] = stdOutPipeName;
-	newEnv['ATOM_SHELL_INTERNAL_RUN_AS_NODE'] = '1';
+	newEnv['STDERR_PIPE_NAME'] = stdErrPipeName;
+	newEnv['ELECTRON_RUN_AS_NODE'] = '1';
 
 	return newEnv;
 }
 
-export function fork(modulePath: string, args: string[], options: IForkOpts, callback:(error:any, cp:cp.ChildProcess)=>void): void {
+export function fork(modulePath: string, args: string[], options: IForkOpts, callback: (error: any, cp: cp.ChildProcess) => void): void {
 
 	let callbackCalled = false;
 	let resolve = (result: cp.ChildProcess) => {
@@ -63,7 +64,7 @@ export function fork(modulePath: string, args: string[], options: IForkOpts, cal
 		callbackCalled = true;
 		callback(null, result);
 	};
-	let reject = (err:any) => {
+	let reject = (err: any) => {
 		if (callbackCalled) {
 			return;
 		}
@@ -71,37 +72,48 @@ export function fork(modulePath: string, args: string[], options: IForkOpts, cal
 		callback(err, null);
 	};
 
-	// Generate two unique pipe names
+	// Generate three unique pipe names
 	let stdInPipeName = generatePipeName();
 	let stdOutPipeName = generatePipeName();
+	let stdErrPipeName = generatePipeName();
 
-	let newEnv = generatePatchedEnv(options.env || process.env, stdInPipeName, stdOutPipeName);
+	let newEnv = generatePatchedEnv(options.env || process.env, stdInPipeName, stdOutPipeName, stdErrPipeName);
 
 	let childProcess: cp.ChildProcess;
 
+	// Begin listening to stderr pipe
+	let stdErrServer = net.createServer((stdErrStream) => {
+		// From now on the childProcess.stderr is available for reading
+		childProcess.stderr = stdErrStream;
+	});
+	stdErrServer.listen(stdErrPipeName);
+
 	// Begin listening to stdout pipe
-	let server = net.createServer((stream) => {
+	let stdOutServer = net.createServer((stdOutStream) => {
 		// The child process will write exactly one chunk with content `ready` when it has installed a listener to the stdin pipe
 
-		stream.once('data', (chunk:Buffer) => {
+		stdOutStream.once('data', (chunk: Buffer) => {
 			// The child process is sending me the `ready` chunk, time to connect to the stdin pipe
 			childProcess.stdin = <any>net.connect(stdInPipeName);
 
 			// From now on the childProcess.stdout is available for reading
-			childProcess.stdout = stream;
+			childProcess.stdout = stdOutStream;
 
 			resolve(childProcess);
 		});
 	});
-	server.listen(stdOutPipeName);
+	stdOutServer.listen(stdOutPipeName);
 
 	let serverClosed = false;
 	let closeServer = () => {
 		if (serverClosed) {
 			return;
 		}
+
 		serverClosed = true;
-		server.close();
+		process.removeListener('exit', closeServer);
+		stdOutServer.close();
+		stdErrServer.close();
 	};
 
 	// Create the process
@@ -113,13 +125,16 @@ export function fork(modulePath: string, args: string[], options: IForkOpts, cal
 		execArgv: options.execArgv
 	});
 
-	childProcess.once('error', (err:Error) => {
+	childProcess.once('error', (err: Error) => {
 		closeServer();
 		reject(err);
 	});
 
-	childProcess.once('exit', (err:Error) => {
+	childProcess.once('exit', (err: Error) => {
 		closeServer();
 		reject(err);
 	});
+
+	// On vscode exit still close server #7758
+	process.once('exit', closeServer);
 }
