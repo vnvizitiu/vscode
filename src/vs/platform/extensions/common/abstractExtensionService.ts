@@ -8,7 +8,7 @@ import * as nls from 'vs/nls';
 import Severity from 'vs/base/common/severity';
 import { TPromise } from 'vs/base/common/winjs.base';
 import { IExtensionDescription, IExtensionService, IExtensionsStatus, ExtensionPointContribution } from 'vs/platform/extensions/common/extensions';
-import { IExtensionPoint, onWillActivate } from 'vs/platform/extensions/common/extensionsRegistry';
+import { IExtensionPoint } from 'vs/platform/extensions/common/extensionsRegistry';
 
 const hasOwnProperty = Object.hasOwnProperty;
 
@@ -28,6 +28,8 @@ interface IActivatingExtensionMap {
 	[extensionId: string]: TPromise<void>;
 }
 
+const NO_OP_VOID_PROMISE = TPromise.as<void>(void 0);
+
 export abstract class AbstractExtensionService<T extends ActivatedExtension> implements IExtensionService {
 	public _serviceBrand: any;
 
@@ -35,13 +37,21 @@ export abstract class AbstractExtensionService<T extends ActivatedExtension> imp
 	protected _activatedExtensions: IActivatedExtensionMap<T>;
 	private _onReady: TPromise<boolean>;
 	private _onReadyC: (v: boolean) => void;
+	private _isReady: boolean;
 	protected _registry: ExtensionDescriptionRegistry;
+
+	/**
+	 * A map of already activated events to speed things up if the same activation event is triggered multiple times.
+	 */
+	private _alreadyActivatedEvents: { [activationEvent: string]: boolean; };
 
 	constructor(isReadyByDefault: boolean) {
 		if (isReadyByDefault) {
+			this._isReady = true;
 			this._onReady = TPromise.as(true);
 			this._onReadyC = (v: boolean) => { /*no-op*/ };
 		} else {
+			this._isReady = false;
 			this._onReady = new TPromise<boolean>((c, e, p) => {
 				this._onReadyC = c;
 			}, () => {
@@ -51,9 +61,11 @@ export abstract class AbstractExtensionService<T extends ActivatedExtension> imp
 		this._activatingExtensions = {};
 		this._activatedExtensions = {};
 		this._registry = new ExtensionDescriptionRegistry();
+		this._alreadyActivatedEvents = Object.create(null);
 	}
 
 	protected _triggerOnReady(): void {
+		this._isReady = true;
 		this._onReadyC(true);
 	}
 
@@ -93,10 +105,20 @@ export abstract class AbstractExtensionService<T extends ActivatedExtension> imp
 	}
 
 	public activateByEvent(activationEvent: string): TPromise<void> {
-		return this._onReady.then(() => {
-			onWillActivate.fire(activationEvent);
-			let activateExtensions = this._registry.getExtensionDescriptionsForActivationEvent(activationEvent);
-			return this._activateExtensions(activateExtensions, 0);
+		if (this._alreadyActivatedEvents[activationEvent]) {
+			return NO_OP_VOID_PROMISE;
+		}
+		if (this._isReady) {
+			return this._activateByEvent(activationEvent);
+		} else {
+			return this._onReady.then(() => this._activateByEvent(activationEvent));
+		}
+	}
+
+	private _activateByEvent(activationEvent: string): TPromise<void> {
+		let activateExtensions = this._registry.getExtensionDescriptionsForActivationEvent(activationEvent);
+		return this._activateExtensions(activateExtensions, 0).then(() => {
+			this._alreadyActivatedEvents[activationEvent] = true;
 		});
 	}
 

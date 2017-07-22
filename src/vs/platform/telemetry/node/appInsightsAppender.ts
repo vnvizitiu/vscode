@@ -8,7 +8,7 @@ import * as appInsights from 'applicationinsights';
 import { isObject } from 'vs/base/common/types';
 import { safeStringify, mixin } from 'vs/base/common/objects';
 import { TPromise } from 'vs/base/common/winjs.base';
-import { ITelemetryAppender } from '../common/telemetry';
+import { ITelemetryAppender } from 'vs/platform/telemetry/common/telemetryUtils';
 
 let _initialized = false;
 
@@ -133,7 +133,7 @@ export class AppInsightsAppender implements ITelemetryAppender {
 			return;
 		}
 		data = mixin(data, this._defaultData);
-		let {properties, measurements} = AppInsightsAppender._getData(data);
+		let { properties, measurements } = AppInsightsAppender._getData(data);
 		this._aiClient.trackEvent(this._eventPrefix + '/' + eventName, properties, measurements);
 	}
 
@@ -147,5 +147,6 @@ export class AppInsightsAppender implements ITelemetryAppender {
 				});
 			});
 		}
+		return undefined;
 	}
 }

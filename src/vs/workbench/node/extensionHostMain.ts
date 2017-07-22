@@ -5,25 +5,23 @@
 
 'use strict';
 
-import * as fs from 'fs';
-import * as crypto from 'crypto';
 import nls = require('vs/nls');
 import pfs = require('vs/base/node/pfs');
 import { TPromise } from 'vs/base/common/winjs.base';
-import paths = require('vs/base/common/paths');
-import { createApiFactory, defineAPI } from 'vs/workbench/api/node/extHost.api.impl';
-import { IMainProcessExtHostIPC } from 'vs/platform/extensions/common/ipcRemoteCom';
+import { join } from 'path';
+import { IRemoteCom } from 'vs/platform/extensions/common/ipcRemoteCom';
 import { ExtHostExtensionService } from 'vs/workbench/api/node/extHostExtensionService';
 import { ExtHostThreadService } from 'vs/workbench/services/thread/common/extHostThreadService';
+import { QueryType, ISearchQuery } from 'vs/platform/search/common/search';
+import { DiskSearch } from 'vs/workbench/services/search/node/searchService';
 import { RemoteTelemetryService } from 'vs/workbench/api/node/extHostTelemetry';
-import { IWorkspaceContextService, WorkspaceContextService } from 'vs/platform/workspace/common/workspace';
-import { IInitData, IEnvironment, MainContext } from 'vs/workbench/api/node/extHost.protocol';
+import { IInitData, IEnvironment, IWorkspaceData, MainContext } from 'vs/workbench/api/node/extHost.protocol';
 import * as errors from 'vs/base/common/errors';
 
 const nativeExit = process.exit.bind(process);
 process.exit = function () {
 	const err = new Error('An extension called process.exit() and this was prevented.');
-	console.warn((<any>err).stack);
+	console.warn(err.stack);
 };
 export function exit(code?: number) {
 	nativeExit(code);
@@ -35,83 +33,30 @@ interface ITestRunner {
 
 export class ExtensionHostMain {
 
-	private _isTerminating: boolean;
-	private _contextService: IWorkspaceContextService;
+	private _isTerminating: boolean = false;
+	private _diskSearch: DiskSearch;
+	private _workspace: IWorkspaceData;
 	private _environment: IEnvironment;
 	private _extensionService: ExtHostExtensionService;
 
-	constructor(remoteCom: IMainProcessExtHostIPC, initData: IInitData) {
-		this._isTerminating = false;
-
+	constructor(remoteCom: IRemoteCom, initData: IInitData) {
 		this._environment = initData.environment;
+		this._workspace = initData.workspace;
 
-		this._contextService = new WorkspaceContextService(initData.contextService.workspace);
-		const workspaceStoragePath = this._getOrCreateWorkspaceStoragePath();
-
+		// services
 		const threadService = new ExtHostThreadService(remoteCom);
-
 		const telemetryService = new RemoteTelemetryService('pluginHostTelemetry', threadService);
-
-		this._extensionService = new ExtHostExtensionService(initData.extensions, threadService, telemetryService, { _serviceBrand: 'optionalArgs', workspaceStoragePath });
+		this._extensionService = new ExtHostExtensionService(initData, threadService, telemetryService);
 
 		// Error forwarding
 		const mainThreadErrors = threadService.get(MainContext.MainThreadErrors);
 		errors.setUnexpectedErrorHandler(err => mainThreadErrors.onUnexpectedExtHostError(errors.transformErrorForSerialization(err)));
-
-		// Create the ext host API
-		const factory = createApiFactory(initData, threadService, this._extensionService, this._contextService);
-		defineAPI(factory, this._extensionService);
-	}
-
-	private _getOrCreateWorkspaceStoragePath(): string {
-		let workspaceStoragePath: string;
-
-		const workspace = this._contextService.getWorkspace();
-
-		function rmkDir(directory: string): boolean {
-			try {
-				fs.mkdirSync(directory);
-				return true;
-			} catch (err) {
-				if (err.code === 'ENOENT') {
-					if (rmkDir(paths.dirname(directory))) {
-						fs.mkdirSync(directory);
-						return true;
-					}
-				} else {
-					return fs.statSync(directory).isDirectory();
-				}
-			}
-		}
-
-		if (workspace) {
-			const hash = crypto.createHash('md5');
-			hash.update(workspace.resource.fsPath);
-			if (workspace.uid) {
-				hash.update(workspace.uid.toString());
-			}
-			workspaceStoragePath = paths.join(this._environment.appSettingsHome, 'workspaceStorage', hash.digest('hex'));
-			if (!fs.existsSync(workspaceStoragePath)) {
-				try {
-					if (rmkDir(workspaceStoragePath)) {
-						fs.writeFileSync(paths.join(workspaceStoragePath, 'meta.json'), JSON.stringify({
-							workspacePath: workspace.resource.fsPath,
-							uid: workspace.uid ? workspace.uid : null
-						}, null, 4));
-					} else {
-						workspaceStoragePath = undefined;
-					}
-				} catch (err) {
-					workspaceStoragePath = undefined;
-				}
-			}
-		}
-
-		return workspaceStoragePath;
 	}
 
 	public start(): TPromise<void> {
-		return this.handleEagerExtensions().then(() => this.handleExtensionTests());
+		return this._extensionService.onReady()
+			.then(() => this.handleEagerExtensions())
+			.then(() => this.handleExtensionTests());
 	}
 
 	public terminate(): void {
@@ -155,12 +100,9 @@ export class ExtensionHostMain {
 	}
 
 	private handleWorkspaceContainsEagerExtensions(): TPromise<void> {
-		let workspace = this._contextService.getWorkspace();
-		if (!workspace || !workspace.resource) {
+		if (!this._workspace || this._workspace.roots.length === 0) {
 			return TPromise.as(null);
 		}
-
-		const folderPath = workspace.resource.fsPath;
 
 		const desiredFilesMap: {
 			[filename: string]: boolean;
@@ -180,13 +122,42 @@ export class ExtensionHostMain {
 			}
 		});
 
-		const fileNames = Object.keys(desiredFilesMap);
+		const matchingPatterns = Object.keys(desiredFilesMap).map(p => {
+			// TODO: This is a bit hacky -- maybe this should be implemented by using something like
+			// `workspaceGlob` or something along those lines?
+			if (p.indexOf('*') > -1 || p.indexOf('?') > -1) {
+				if (!this._diskSearch) {
+					// Shut down this search process after 1s
+					this._diskSearch = new DiskSearch(false, 1000);
+				}
 
-		return TPromise.join(fileNames.map(f => pfs.exists(paths.join(folderPath, f)))).then(exists => {
-			fileNames
-				.filter((f, i) => exists[i])
-				.forEach(fileName => {
-					const activationEvent = `workspaceContains:${fileName}`;
+				const query: ISearchQuery = {
+					folderQueries: this._workspace.roots.map(root => ({ folder: root })),
+					type: QueryType.File,
+					maxResults: 1,
+					includePattern: { [p]: true }
+				};
+
+				return this._diskSearch.search(query).then(result => result.results.length ? p : undefined);
+			} else {
+				// find exact path
+				return new TPromise<string>(async resolve => {
+					for (const { fsPath } of this._workspace.roots) {
+						if (await pfs.exists(join(fsPath, p))) {
+							resolve(p);
+							return;
+						}
+					}
+					resolve(undefined);
+				});
+			}
+		});
+
+		return TPromise.join(matchingPatterns).then(patterns => {
+			patterns
+				.filter(p => p !== undefined)
+				.forEach(p => {
+					const activationEvent = `workspaceContains:${p}`;
 
 					this._extensionService.activateByEvent(activationEvent)
 						.done(null, err => console.error(err));
@@ -229,7 +200,7 @@ export class ExtensionHostMain {
 			this.gracefulExit(1 /* ERROR */);
 		}
 
-		return TPromise.wrapError<void>(requireError ? requireError.toString() : nls.localize('extensionTestError', "Path {0} does not point to a valid extension test runner.", this._environment.extensionTestsPath));
+		return TPromise.wrapError<void>(new Error(requireError ? requireError.toString() : nls.localize('extensionTestError', "Path {0} does not point to a valid extension test runner.", this._environment.extensionTestsPath)));
 	}
 
 	private gracefulExit(code: number): void {

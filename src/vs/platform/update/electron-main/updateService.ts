@@ -5,8 +5,6 @@
 
 'use strict';
 
-import * as fs from 'original-fs';
-import * as path from 'path';
 import * as electron from 'electron';
 import { IDisposable, dispose } from 'vs/base/common/lifecycle';
 import Event, { Emitter, once, filterEvent } from 'vs/base/common/event';
@@ -16,12 +14,14 @@ import { fromEventEmitter } from 'vs/base/node/event';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { Win32AutoUpdaterImpl } from './auto-updater.win32';
 import { LinuxAutoUpdaterImpl } from './auto-updater.linux';
-import { ILifecycleService } from 'vs/code/electron-main/lifecycle';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import product from 'vs/platform/product';
+import { ILifecycleService } from 'vs/platform/lifecycle/electron-main/lifecycleMain';
+import { IRequestService } from 'vs/platform/request/node/request';
+import product from 'vs/platform/node/product';
 import { TPromise } from 'vs/base/common/winjs.base';
 import { IUpdateService, State, IAutoUpdater, IUpdate, IRawUpdate } from 'vs/platform/update/common/update';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
+import { getUpdateFeedUrl } from './updateFeedUrl';
+import { IStorageService } from 'vs/platform/storage/node/storage';
 
 export class UpdateService implements IUpdateService {
 
@@ -44,8 +44,8 @@ export class UpdateService implements IUpdateService {
 	private _onUpdateNotAvailable = new Emitter<boolean>();
 	get onUpdateNotAvailable(): Event<boolean> { return this._onUpdateNotAvailable.event; }
 
-	private _onUpdateReady = new Emitter<IUpdate>();
-	get onUpdateReady(): Event<IUpdate> { return this._onUpdateReady.event; }
+	private _onUpdateReady = new Emitter<IRawUpdate>();
+	get onUpdateReady(): Event<IRawUpdate> { return this._onUpdateReady.event; }
 
 	private _onStateChange = new Emitter<State>();
 	get onStateChange(): Event<State> { return this._onStateChange.event; }
@@ -84,25 +84,25 @@ export class UpdateService implements IUpdateService {
 	}
 
 	constructor(
-		@IInstantiationService instantiationService: IInstantiationService,
+		@IRequestService requestService: IRequestService,
 		@ILifecycleService private lifecycleService: ILifecycleService,
 		@IConfigurationService private configurationService: IConfigurationService,
-		@ITelemetryService private telemetryService: ITelemetryService
+		@ITelemetryService private telemetryService: ITelemetryService,
+		@IStorageService private storageService: IStorageService
 	) {
+		const channel = this.getUpdateChannel();
+
 		if (process.platform === 'win32') {
-			this.raw = instantiationService.createInstance(Win32AutoUpdaterImpl);
+			this.raw = new Win32AutoUpdaterImpl(process.arch, channel, requestService, storageService);
 		} else if (process.platform === 'linux') {
-			this.raw = instantiationService.createInstance(LinuxAutoUpdaterImpl);
+			this.raw = new LinuxAutoUpdaterImpl(requestService);
 		} else if (process.platform === 'darwin') {
 			this.raw = electron.autoUpdater;
 		} else {
 			return;
 		}
 
-		telemetryService.publicLog('whattt', { yeah: 123 });
-
-		const channel = this.getUpdateChannel();
-		const feedUrl = this.getUpdateFeedUrl(channel);
+		const feedUrl = getUpdateFeedUrl(channel);
 
 		if (!feedUrl) {
 			return; // updates not available
@@ -136,7 +136,14 @@ export class UpdateService implements IUpdateService {
 	}
 
 	checkForUpdates(explicit = false): TPromise<IUpdate> {
-		return this.throttler.queue(() => this._checkForUpdates(explicit));
+		return this.throttler.queue(() => this._checkForUpdates(explicit))
+			.then(null, err => {
+				if (explicit) {
+					this._onError.fire(err);
+				}
+
+				return null;
+			});
 	}
 
 	private _checkForUpdates(explicit: boolean): TPromise<IUpdate> {
@@ -172,9 +179,10 @@ export class UpdateService implements IUpdateService {
 				this._availableUpdate = data;
 				this._onUpdateAvailable.fire({ url: update.url, version: update.version });
 				this.state = State.UpdateAvailable;
+				this.telemetryService.publicLog('update:available', { explicit, version: update.version, currentVersion: product.commit });
 
 			} else {
-				const data: IUpdate = {
+				const data: IRawUpdate = {
 					releaseNotes: update.releaseNotes,
 					version: update.version,
 					date: update.date
@@ -187,6 +195,9 @@ export class UpdateService implements IUpdateService {
 			}
 
 			return update;
+		}, err => {
+			this.state = State.Idle;
+			return TPromise.wrapError<IUpdate>(err);
 		});
 
 		return always(result, () => dispose(listeners));
@@ -197,24 +208,6 @@ export class UpdateService implements IUpdateService {
 		const channel = config && config.channel;
 
 		return channel === 'none' ? null : product.quality;
-	}
-
-	private getUpdateFeedUrl(channel: string): string {
-		if (!channel) {
-			return null;
-		}
-
-		if (process.platform === 'win32' && !fs.existsSync(path.join(path.dirname(process.execPath), 'unins000.exe'))) {
-			return null;
-		}
-
-		if (!product.updateUrl || !product.commit) {
-			return null;
-		}
-
-		const platform = process.platform === 'linux' ? `linux-${process.arch}` : process.platform;
-
-		return `${product.updateUrl}/api/update/${platform}/${channel}/${product.commit}`;
 	}
 
 	quitAndInstall(): TPromise<void> {

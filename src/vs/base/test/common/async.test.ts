@@ -495,7 +495,7 @@ suite('Async', () => {
 
 		let f1 = () => TPromise.as(true).then(() => res.push(1));
 		let f2 = () => TPromise.timeout(10).then(() => res.push(2));
-		let f3 = () => TPromise.as(true).then(() => TPromise.wrapError('error'));
+		let f3 = () => TPromise.as(true).then(() => TPromise.wrapError(new Error('error')));
 		let f4 = () => TPromise.timeout(20).then(() => res.push(4));
 		let f5 = () => TPromise.timeout(0).then(() => res.push(5));
 
@@ -540,6 +540,32 @@ suite('Async', () => {
 						});
 					});
 				});
+			});
+		});
+	});
+
+	test('Queue - events', function (done) {
+		let queue = new Async.Queue();
+
+		let finished = false;
+		queue.onFinished(() => {
+			done();
+		});
+
+		let res = [];
+
+		let f1 = () => TPromise.timeout(10).then(() => res.push(2));
+		let f2 = () => TPromise.timeout(20).then(() => res.push(4));
+		let f3 = () => TPromise.timeout(0).then(() => res.push(5));
+
+		const q1 = queue.queue(f1);
+		const q2 = queue.queue(f2);
+		queue.queue(f3);
+
+		q1.then(() => {
+			assert.ok(!finished);
+			q2.then(() => {
+				assert.ok(!finished);
 			});
 		});
 	});

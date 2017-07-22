@@ -20,8 +20,10 @@ const options: minimist.Opts = {
 		'install-extension',
 		'uninstall-extension',
 		'debugBrkPluginHost',
+		'debugId',
 		'debugPluginHost',
-		'open-url'
+		'open-url',
+		'enable-proposed-api'
 	],
 	boolean: [
 		'help',
@@ -30,14 +32,17 @@ const options: minimist.Opts = {
 		'diff',
 		'goto',
 		'new-window',
+		'unity-launch',
 		'reuse-window',
 		'performance',
+		'prof-startup',
 		'verbose',
 		'logExtensionHostCommunication',
 		'disable-extensions',
 		'list-extensions',
 		'show-versions',
-		'nolazy'
+		'nolazy',
+		'skip-getting-started'
 	],
 	alias: {
 		help: 'h',
@@ -55,7 +60,7 @@ const options: minimist.Opts = {
 
 function validate(args: ParsedArgs): ParsedArgs {
 	if (args.goto) {
-		args._.forEach(arg => assert(/^(\w:)?[^:]+(:\d*){0,2}$/.test(arg), localize('gotoValidation', "Arguments in `--goto` mode should be in the format of `FILE(:LINE(:COLUMN))`.")));
+		args._.forEach(arg => assert(/^(\w:)?[^:]+(:\d*){0,2}$/.test(arg), localize('gotoValidation', "Arguments in `--goto` mode should be in the format of `FILE(:LINE(:CHARACTER))`.")));
 	}
 
 	return args;
@@ -67,6 +72,7 @@ function stripAppPath(argv: string[]): string[] {
 	if (index > -1) {
 		return [...argv.slice(0, index), ...argv.slice(index + 1)];
 	}
+	return undefined;
 }
 
 /**
@@ -105,10 +111,11 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 export const optionsHelp: { [name: string]: string; } = {
 	'-d, --diff': localize('diff', "Open a diff editor. Requires to pass two file paths as arguments."),
-	'-g, --goto': localize('goto', "Open the file at path at the line and column (add :line[:column] to path)."),
+	'-g, --goto': localize('goto', "Open the file at path at the line and character (add :line[:character] to path)."),
 	'--locale <locale>': localize('locale', "The locale to use (e.g. en-US or zh-TW)."),
 	'-n, --new-window': localize('newWindow', "Force a new instance of Code."),
 	'-p, --performance': localize('performance', "Start with the 'Developer: Startup Performance' command enabled."),
+	'--prof-startup': localize('prof-startup', "Run CPU profiler during startup"),
 	'-r, --reuse-window': localize('reuseWindow', "Force opening a file or folder in the last active window."),
 	'--user-data-dir <dir>': localize('userDataDir', "Specifies the directory that user data is kept in, useful when running as root."),
 	'--verbose': localize('verbose', "Print verbose output (implies --wait)."),
@@ -118,6 +125,7 @@ export const optionsHelp: { [name: string]: string; } = {
 	'--show-versions': localize('showVersions', "Show versions of installed extensions, when using --list-extension."),
 	'--install-extension <ext>': localize('installExtension', "Installs an extension."),
 	'--uninstall-extension <ext>': localize('uninstallExtension', "Uninstalls an extension."),
+	'--enable-proposed-api <ext>': localize('experimentalApis', "Enables proposed api features for an extension."),
 	'--disable-extensions': localize('disableExtensions', "Disable all installed extensions."),
 	'--disable-gpu': localize('disableGPU', "Disable GPU hardware acceleration."),
 	'-v, --version': localize('version', "Print version."),
@@ -140,7 +148,7 @@ export function formatOptions(options: { [name: string]: string; }, columns: num
 			result += '\n';
 		}
 		result += '  ' + k + keyPadding + wrappedDescription[0];
-		for (var i = 1; i < wrappedDescription.length; i++) {
+		for (let i = 1; i < wrappedDescription.length; i++) {
 			result += '\n' + (<any>' ').repeat(argLength) + wrappedDescription[i];
 		}
 	});
@@ -148,7 +156,7 @@ export function formatOptions(options: { [name: string]: string; }, columns: num
 }
 
 function wrapText(text: string, columns: number): string[] {
-	let lines = [];
+	let lines: string[] = [];
 	while (text.length) {
 		let index = text.length < columns ? text.length : text.lastIndexOf(' ', columns);
 		let line = text.slice(0, index).trim();

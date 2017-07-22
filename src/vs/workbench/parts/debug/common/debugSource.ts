@@ -3,20 +3,24 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as nls from 'vs/nls';
 import uri from 'vs/base/common/uri';
-import * as paths from 'vs/base/common/paths';
 import { DEBUG_SCHEME } from 'vs/workbench/parts/debug/common/debug';
+
+const UNKNOWN_SOURCE_LABEL = nls.localize('unknownSource', "Unknown Source");
 
 export class Source {
 
 	public uri: uri;
 	public available: boolean;
 
-	private static INTERNAL_URI_PREFIX = `${DEBUG_SCHEME}://internal/`;
-
-	constructor(public raw: DebugProtocol.Source, available = true) {
-		this.uri = raw.path ? uri.file(paths.normalize(raw.path)) : uri.parse(Source.INTERNAL_URI_PREFIX + raw.sourceReference + '/' + raw.name);
-		this.available = available;
+	constructor(public raw: DebugProtocol.Source) {
+		if (!raw) {
+			this.raw = { name: UNKNOWN_SOURCE_LABEL };
+		}
+		const path = this.raw.path || this.raw.name;
+		this.available = this.raw.name !== UNKNOWN_SOURCE_LABEL;
+		this.uri = this.raw.sourceReference > 0 ? uri.parse(`${DEBUG_SCHEME}:${path}`) : uri.file(path);
 	}
 
 	public get name() {
@@ -27,15 +31,15 @@ export class Source {
 		return this.raw.origin;
 	}
 
+	public get presentationHint() {
+		return this.raw.presentationHint;
+	}
+
 	public get reference() {
 		return this.raw.sourceReference;
 	}
 
 	public get inMemory() {
-		return Source.isInMemory(this.uri);
-	}
-
-	public static isInMemory(uri: uri): boolean {
-		return uri.toString().indexOf(Source.INTERNAL_URI_PREFIX) === 0;
+		return this.uri.toString().indexOf(`${DEBUG_SCHEME}:`) === 0;
 	}
 }
